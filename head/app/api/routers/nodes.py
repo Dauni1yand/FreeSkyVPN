@@ -7,9 +7,10 @@ over SSH — see that script for where these values come from.
 
 from __future__ import annotations
 
+import base64
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -33,6 +34,10 @@ class NodeRegisterRequest(BaseModel):
     control_port: int = 62050
     country: str
     control_inbound: ControlInboundIn
+    # base64 of the node's self-signed /var/lib/marzban-node/ssl_cert.pem.
+    # Base64 rather than raw PEM because bootstrap_node.sh emits this inside a
+    # single-line JSON blob over ssh, where embedded newlines would not survive.
+    tls_cert_b64: str
 
 
 class NodeResponse(BaseModel):
@@ -45,11 +50,17 @@ class NodeResponse(BaseModel):
 
 @router.post("/register", response_model=NodeResponse)
 def register_node(payload: NodeRegisterRequest, db: DbSession) -> NodeResponse:
+    try:
+        tls_cert_pem = base64.b64decode(payload.tls_cert_b64, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"tls_cert_b64 is not valid base64 PEM: {exc}") from exc
+
     node = Node(
         host=payload.host,
         control_port=payload.control_port,
         country=payload.country,
         status=NodeStatus.active,
+        tls_cert_pem=tls_cert_pem,
     )
     db.add(node)
     db.flush()

@@ -15,18 +15,31 @@ active/suspect/dead scoring that applies to customer inbounds.
 from __future__ import annotations
 
 import json
+import logging
 
 from app.db.models.node import Inbound, InboundState
+from app.services.transports import DEFAULT_TRANSPORT, get_transport
+
+logger = logging.getLogger(__name__)
 
 
-def _inbound_clients(inbound: Inbound) -> list[dict]:
+def _client_entry(client_id: str, flow: str, email: str | None = None) -> dict:
+    entry: dict = {"id": client_id}
+    if email is not None:
+        entry["email"] = email
+    if flow:  # omitted entirely for transports that carry no flow
+        entry["flow"] = flow
+    return entry
+
+
+def _inbound_clients(inbound: Inbound, flow: str) -> list[dict]:
     if inbound.is_control_channel:
         if not inbound.control_client_uuid:
             raise ValueError(f"control-channel inbound {inbound.id} has no control_client_uuid")
-        return [{"id": inbound.control_client_uuid, "flow": "xtls-rprx-vision"}]
+        return [_client_entry(inbound.control_client_uuid, flow)]
 
     return [
-        {"id": assignment.xray_uuid, "email": str(assignment.user_id), "flow": "xtls-rprx-vision"}
+        _client_entry(assignment.xray_uuid, flow, email=str(assignment.user_id))
         for assignment in inbound.assignments
         if assignment.released_at is None
     ]
@@ -40,25 +53,48 @@ def render_node_config(inbounds: list[Inbound]) -> str:
         if inbound.state == InboundState.dead and not inbound.is_control_channel:
             continue
 
+        # The control channel is pinned to the default transport: the head's
+        # own tunnel client (reality_tunnel.py) is built for it, and there is
+        # no reason to rotate the path the head reaches the node by.
+        if inbound.is_control_channel:
+            transport = DEFAULT_TRANSPORT
+        else:
+            try:
+                transport = get_transport(inbound.transport)
+            except ValueError:
+                # Skip rather than raise: this renders the config for the
+                # whole node, so letting one unrecognised row abort the push
+                # would take every other user on that node down with it.
+                logger.error(
+                    "inbound %s has unusable transport %r — excluded from node %s config",
+                    inbound.id,
+                    inbound.transport,
+                    inbound.node_id,
+                )
+                continue
+
+        stream_settings = {
+            "network": transport.network,
+            "security": "reality",
+            "realitySettings": {
+                "show": False,
+                "dest": f"{inbound.sni}:443",
+                "xver": 0,
+                "serverNames": [inbound.sni],
+                "privateKey": inbound.reality_private_key,
+                "shortIds": [inbound.reality_short_id],
+            },
+            **transport.stream_settings(str(inbound.id)),
+        }
+
         xray_inbounds.append(
             {
                 "tag": str(inbound.id),
                 "listen": "0.0.0.0",
                 "port": inbound.port,
                 "protocol": "vless",
-                "settings": {"clients": _inbound_clients(inbound), "decryption": "none"},
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": "reality",
-                    "realitySettings": {
-                        "show": False,
-                        "dest": f"{inbound.sni}:443",
-                        "xver": 0,
-                        "serverNames": [inbound.sni],
-                        "privateKey": inbound.reality_private_key,
-                        "shortIds": [inbound.reality_short_id],
-                    },
-                },
+                "settings": {"clients": _inbound_clients(inbound, transport.flow), "decryption": "none"},
+                "streamSettings": stream_settings,
             }
         )
 

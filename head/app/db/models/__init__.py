@@ -12,7 +12,8 @@ from app.db.models.logs import (
     NodeChannelEvent,
     TrafficUsage,
 )
-from app.db.models.node import Assignment, Inbound, Node
+from app.db.models.node import Assignment, Inbound, Node, SniCandidate
+from app.db.models.outbox import ConfigPush, PushReason
 from app.db.models.plan import Payment, Plan, Subscription
 from app.db.models.user import AuthIdentity, User, UserSession
 
@@ -20,6 +21,7 @@ __all__ = [
     "AdView",
     "Assignment",
     "AuthIdentity",
+    "ConfigPush",
     "ConnectionLog",
     "FailReport",
     "Inbound",
@@ -27,6 +29,8 @@ __all__ = [
     "NodeChannelEvent",
     "Payment",
     "Plan",
+    "PushReason",
+    "SniCandidate",
     "Subscription",
     "TrafficUsage",
     "User",

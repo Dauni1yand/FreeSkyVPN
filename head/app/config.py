@@ -19,6 +19,29 @@ class Settings(BaseSettings):
 
     xray_client_binary_path: str = "/usr/local/bin/xray"
 
+    # head's own mTLS identity, presented to every node (see provisioning/generate_head_client_cert.sh)
+    head_client_cert_path: str = "/etc/freeskyvpn/head_client_cert.pem"
+    head_client_key_path: str = "/etc/freeskyvpn/head_client_key.pem"
+    # each node's self-signed cert is stored in the DB and materialised here for httpx's verify=
+    node_cert_cache_dir: str = "/var/lib/freeskyvpn/node_certs"
+
+    # --- Config Selector (phase 2) ---
+    # An inbound is considered blocked once this many distinct users report it
+    # broken inside the window; below that, only the reporter is moved.
+    inbound_fail_threshold: int = 5
+    inbound_fail_window_minutes: int = 10
+    # Per-user cooldown on the "не работает" button, so a user hammering it
+    # cannot spin up inbound after inbound on our own nodes.
+    fail_report_cooldown_seconds: int = 30
+    # Once a node accumulates this many dead inbounds inside the fail window,
+    # the node itself (not just its inbounds) is treated as burned and users
+    # are migrated off it — a new port/SNI cannot fix a blocked IP.
+    node_dead_inbound_threshold: int = 2
+    # Ports tried first for new inbounds: all of them are ordinary HTTPS ports,
+    # so a Reality listener on one looks unremarkable.
+    preferred_ports: tuple[int, ...] = (443, 8443, 2053, 2083, 2087, 2096)
+    fallback_port_range: tuple[int, int] = (20000, 60000)
+
 
 @lru_cache
 def get_settings() -> Settings:

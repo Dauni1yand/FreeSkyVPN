@@ -2,7 +2,17 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Uuid, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -36,6 +46,12 @@ class Node(Base):
     control_port: Mapped[int] = mapped_column(Integer, default=62050)  # marzban-node SERVICE_PORT
     country: Mapped[str] = mapped_column(String(64))
     status: Mapped[NodeStatus] = mapped_column(Enum(NodeStatus, name="node_status"), default=NodeStatus.active)
+
+    # marzban-node generates its own self-signed cert on first boot; the head
+    # captures it during provisioning and pins it as the only cert it will
+    # accept from this node. Without it there is nothing to verify the TLS
+    # peer against, so this is required for the control channel to work at all.
+    tls_cert_pem: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- control-channel resilience state (see app/node_manager/channel.py) ---
     channel_state: Mapped[NodeChannelState] = mapped_column(
@@ -103,3 +119,29 @@ class Assignment(Base):
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     inbound: Mapped["Inbound"] = relationship(back_populates="assignments")
+
+
+class SniCandidate(Base):
+    """Curated pool of domains usable as a Reality `serverName`/`dest`.
+
+    Kept in data rather than code for the same reason as `plans`: which
+    domains still pass unblocked is an operational question that changes
+    faster than deploys. A usable candidate must be a real site that speaks
+    TLS 1.3 + HTTP/2, is reachable from the target audience, and is not ours
+    — Reality forwards non-authenticated probes there, so the deception only
+    holds if the domain genuinely answers.
+
+    `burn_count` records how often an inbound using this SNI was declared
+    dead. It only biases selection (least-recently-burned first) rather than
+    auto-disabling, because a dead inbound never tells us *which* of its
+    port, SNI or node IP was the part that got blocked.
+    """
+
+    __tablename__ = "sni_candidates"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    domain: Mapped[str] = mapped_column(String(255), unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    burn_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_burned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

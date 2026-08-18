@@ -78,9 +78,24 @@ if command -v ufw &>/dev/null; then
     ufw allow "$CONTROL_PORT_REALITY"/tcp || true
 fi
 
+# marzban-node writes its self-signed cert on first start. The head pins this
+# exact certificate as the only one it will accept from this node (there is no
+# shared CA), so provisioning is not finished until we have it.
+log "waiting for marzban-node to generate its TLS certificate"
+for _ in $(seq 1 30); do
+    [[ -s "$MARZBAN_NODE_DIR/ssl_cert.pem" ]] && break
+    sleep 1
+done
+if [[ ! -s "$MARZBAN_NODE_DIR/ssl_cert.pem" ]]; then
+    echo "marzban-node did not produce $MARZBAN_NODE_DIR/ssl_cert.pem; check 'docker logs marzban-node'" >&2
+    exit 1
+fi
+# base64 so the PEM's newlines survive the single-line JSON below
+TLS_CERT_B64="$(base64 -w0 < "$MARZBAN_NODE_DIR/ssl_cert.pem")"
+
 NODE_HOST="$(curl -fsS https://api.ipify.org || hostname -I | awk '{print $1}')"
 
 log "done — registration payload follows on stdout"
 cat <<JSON
-{"host": "$NODE_HOST", "control_port": $CONTROL_PORT, "control_inbound": {"port": $CONTROL_PORT_REALITY, "sni": "$CONTROL_SNI", "reality_private_key": "$PRIVATE_KEY", "reality_public_key": "$PUBLIC_KEY", "reality_short_id": "$SHORT_ID", "control_client_uuid": "$CONTROL_CLIENT_UUID"}}
+{"host": "$NODE_HOST", "control_port": $CONTROL_PORT, "tls_cert_b64": "$TLS_CERT_B64", "control_inbound": {"port": $CONTROL_PORT_REALITY, "sni": "$CONTROL_SNI", "reality_private_key": "$PRIVATE_KEY", "reality_public_key": "$PUBLIC_KEY", "reality_short_id": "$SHORT_ID", "control_client_uuid": "$CONTROL_CLIENT_UUID"}}
 JSON
