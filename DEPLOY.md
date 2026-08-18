@@ -14,9 +14,14 @@
 ## 1. Ключи и конфигурация
 
 ```bash
-git clone <репозиторий> freeskyvpn && cd freeskyvpn
+git clone -b claude/vpn-freemium-service-xd89dr <репозиторий> freeskyvpn
+cd freeskyvpn
 cp .env.example .env
 ```
+
+Ветка указана не случайно: код лежит в `claude/vpn-freemium-service-xd89dr`,
+а в `main` пока только README. Обычный `git clone` без `-b` приведёт вас в
+пустой репозиторий. Если ветку уже влили в `main` — `-b` можно опустить.
 
 Сгенерируйте два ключа и впишите их в `.env`. Делается на хосте, а не через
 compose: стек намеренно отказывается стартовать с пустыми ключами, так что
