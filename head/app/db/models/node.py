@@ -64,6 +64,16 @@ class Node(Base):
     country: Mapped[str] = mapped_column(String(64))
     status: Mapped[NodeStatus] = mapped_column(Enum(NodeStatus, name="node_status"), default=NodeStatus.active)
 
+    # --- SSH access, used at provisioning and for occasional maintenance ---
+    ssh_user: Mapped[str] = mapped_column(String(64), default="root")
+    ssh_port: Mapped[int] = mapped_column(Integer, default=22)
+    # Encrypted at rest (app/services/crypto.py): the head must be able to
+    # present these again, so they cannot be hashed, and a database dump
+    # should not be enough to take over the fleet.
+    ssh_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssh_private_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssh_password_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     tier: Mapped[NodeTier] = mapped_column(Enum(NodeTier, name="node_tier"), default=NodeTier.free)
     # The rate `tc` was configured with at provisioning time, recorded so the
     # head can report what a free user actually gets. Null on paid nodes,

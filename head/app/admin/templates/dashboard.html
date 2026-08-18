@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Обзор{% endblock %}
+{% block content %}
+<h2>Обзор</h2>
+<p class="sub">Состояние сервиса на {{ now }}</p>
+
+<div class="stats">
+  <div class="stat"><div class="k">Ноды</div><div class="v num">{{ s.nodes_active }}/{{ s.nodes_total }}</div>
+    <div class="n">активных из всех</div></div>
+  <div class="stat"><div class="k">Канал управления</div>
+    <div class="v num">{{ s.nodes_degraded + s.nodes_isolated }}</div>
+    <div class="n">{{ s.nodes_degraded }} через туннель, {{ s.nodes_isolated }} изолировано</div></div>
+  <div class="stat"><div class="k">Пользователи</div><div class="v num">{{ s.users_total }}</div>
+    <div class="n">{{ s.users_connected }} с активным конфигом</div></div>
+  <div class="stat"><div class="k">Подписки</div><div class="v num">{{ s.subs_paid }}</div>
+    <div class="n">{{ s.subs_trial }} на триале</div></div>
+  <div class="stat"><div class="k">Инбаунды</div><div class="v num">{{ s.inbounds_active }}</div>
+    <div class="n">{{ s.inbounds_dead }} мёртвых</div></div>
+  <div class="stat"><div class="k">Очередь доставки</div><div class="v num">{{ s.pushes_pending }}</div>
+    <div class="n">неотправленных конфигов</div></div>
+</div>
+
+{% if s.nodes_isolated %}
+<div class="flash err">
+  <b>{{ s.nodes_isolated }} нод(ы) изолированы</b> — ни прямой канал, ни Reality-туннель не отвечают.
+  Пользователи на них продолжают работать, но новые конфиги туда не уходят.
+</div>
+{% endif %}
+{% if s.nodes_total and not s.nodes_paid %}
+<div class="flash warn">
+  Нет ни одной платной ноды. Платящие пользователи размещаются на бесплатных
+  (шейпленных) нодах — это работает, но приоритет и полная скорость им не достаются.
+</div>
+{% endif %}
+{% if s.nodes_total and not s.nodes_free %}
+<div class="flash warn">
+  Нет ни одной бесплатной ноды. Бесплатные пользователи не смогут подключиться:
+  на платные ноды они намеренно не допускаются.
+</div>
+{% endif %}
+
+<div class="grid2">
+  <div class="card">
+    <h3 style="margin-top:0;font-size:15px">Ноды</h3>
+    {% if nodes %}
+    <div class="wrap"><table>
+      <tr><th>Хост</th><th>Страна</th><th>Тариф</th><th>Канал</th><th class="num">Юзеров</th></tr>
+      {% for n in nodes %}
+      <tr>
+        <td class="mono">{{ n.host }}</td>
+        <td>{{ n.country }}</td>
+        <td><span class="pill {{ 'ok' if n.tier.value=='paid' else 'dim' }}">{{ n.tier.value }}</span></td>
+        <td><span class="pill {{ {'active':'ok','degraded':'warn','isolated':'bad'}[n.channel_state.value] }}">
+          {{ n.channel_state.value }}</span></td>
+        <td class="num">{{ n.load }}</td>
+      </tr>
+      {% endfor %}
+    </table></div>
+    {% else %}<p class="empty">Нод пока нет. <a href="/admin/nodes">Добавьте первую</a>.</p>{% endif %}
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;font-size:15px">Последние события каналов</h3>
+    {% if events %}
+    <div class="wrap"><table>
+      <tr><th>Когда</th><th>Нода</th><th>Переход</th></tr>
+      {% for e in events %}
+      <tr>
+        <td class="mono">{{ e.occurred_at.strftime('%d.%m %H:%M') }}</td>
+        <td class="mono">{{ e.host or '—' }}</td>
+        <td><span class="pill {{ {'active':'ok','degraded':'warn','isolated':'bad'}.get(e.to_state,'dim') }}">
+          {{ e.from_state }} → {{ e.to_state }}</span></td>
+      </tr>
+      {% endfor %}
+    </table></div>
+    {% else %}<p class="empty">Переходов ещё не было.</p>{% endif %}
+  </div>
+</div>
+{% endblock %}

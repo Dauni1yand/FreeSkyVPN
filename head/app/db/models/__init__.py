@@ -5,6 +5,7 @@ test suite both rely on this side effect — importing app.db.models is
 enough to see the whole schema, without listing tables twice.
 """
 
+from app.db.models.admin import AdminAudit, AdminUser
 from app.db.models.logs import (
     AdView,
     ConnectionLog,
@@ -19,6 +20,8 @@ from app.db.models.user import AuthIdentity, User, UserSession
 
 __all__ = [
     "AdView",
+    "AdminAudit",
+    "AdminUser",
     "Assignment",
     "AuthIdentity",
     "ConfigPush",

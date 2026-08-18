@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Журнал действий{% endblock %}
+{% block content %}
+<h2>Журнал действий</h2>
+<p class="sub">Кто и что менял в админке</p>
+<div class="card">
+  {% if entries %}
+  <div class="wrap"><table>
+    <tr><th>Когда</th><th>Кто</th><th>Действие</th><th>Объект</th><th>Детали</th></tr>
+    {% for e in entries %}
+    <tr>
+      <td class="mono">{{ e.at.strftime('%d.%m.%Y %H:%M') }}</td>
+      <td class="mono">{{ e.admin_username }}</td>
+      <td><span class="pill dim">{{ e.action }}</span></td>
+      <td class="mono" style="font-size:12.5px">{{ e.target or '—' }}</td>
+      <td style="font-size:12.5px;color:var(--muted)">{{ (e.detail or '')[:110] }}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="empty">Записей нет.</p>{% endif %}
+</div>
+{% endblock %}

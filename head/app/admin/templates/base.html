@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}FreeSkyVPN{% endblock %} · Админка</title>
+<style>
+  :root{
+    --bg:#F5F6F8; --surface:#fff; --surface-2:#EBEEF1; --border:#D8DCE1;
+    --text:#171B21; --muted:#5B6472; --accent:#1F7A63; --accent-soft:#E1F0EA;
+    --danger:#B54B3C; --danger-soft:#F7E7E3; --warn:#8A6A2B; --warn-soft:#FAF0DC;
+    --mono:ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0F1318; --surface:#171C23; --surface-2:#1E242C; --border:#2A3139;
+      --text:#E7EAEE; --muted:#8A93A0; --accent:#4FBFA0; --accent-soft:#17322B;
+      --danger:#E08770; --danger-soft:#33201C; --warn:#D8B268; --warn-soft:#2E2718;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+  a{color:var(--accent)}
+  .shell{display:grid;grid-template-columns:210px minmax(0,1fr);min-height:100vh}
+  nav{border-right:1px solid var(--border);padding:20px 14px;background:var(--surface)}
+  nav h1{font:600 15px/1.2 var(--mono);margin:0 0 20px;letter-spacing:.02em}
+  nav a{display:block;padding:8px 10px;border-radius:6px;text-decoration:none;
+        color:var(--muted);font-size:14px;margin-bottom:2px}
+  nav a:hover{background:var(--surface-2);color:var(--text)}
+  nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  nav .sep{margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}
+  main{padding:26px 30px 70px;min-width:0}
+  h2{font-size:21px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 22px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:9px;
+        padding:16px 18px;margin-bottom:16px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+  th{font:500 11.5px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  td.mono,.mono{font-family:var(--mono);font-size:13px}
+  .num{font-variant-numeric:tabular-nums}
+  .wrap{overflow-x:auto}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font:500 11.5px/1.6 var(--mono);
+        text-transform:uppercase;letter-spacing:.03em}
+  .pill.ok{background:var(--accent-soft);color:var(--accent)}
+  .pill.bad{background:var(--danger-soft);color:var(--danger)}
+  .pill.warn{background:var(--warn-soft);color:var(--warn)}
+  .pill.dim{background:var(--surface-2);color:var(--muted)}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:14px 16px}
+  .stat .k{font:500 11.5px/1.4 var(--mono);text-transform:uppercase;color:var(--muted);letter-spacing:.04em}
+  .stat .v{font-size:25px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:4px}
+  .stat .n{font-size:12.5px;color:var(--muted);margin-top:2px}
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+  input,select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;
+               background:var(--bg);color:var(--text);font-size:14px;font-family:inherit}
+  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  button,.btn{display:inline-block;padding:8px 14px;border-radius:6px;border:1px solid var(--accent);
+              background:var(--accent);color:#fff;font-size:14px;cursor:pointer;text-decoration:none;
+              font-family:inherit}
+  button:hover,.btn:hover{filter:brightness(1.08)}
+  button.ghost,.btn.ghost{background:transparent;color:var(--accent)}
+  button.danger,.btn.danger{background:var(--danger);border-color:var(--danger)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .flash{padding:11px 14px;border-radius:7px;margin-bottom:16px;font-size:14px;
+         border:1px solid var(--border);border-left-width:3px}
+  .flash.ok{background:var(--accent-soft);border-left-color:var(--accent)}
+  .flash.err{background:var(--danger-soft);border-left-color:var(--danger)}
+  .flash.warn{background:var(--warn-soft);border-left-color:var(--warn)}
+  pre{background:var(--surface-2);padding:12px;border-radius:7px;overflow-x:auto;
+      font-family:var(--mono);font-size:12.5px;margin:0;white-space:pre-wrap;word-break:break-word}
+  .empty{color:var(--muted);font-size:14px;padding:16px 0}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+  @media(max-width:820px){.shell{grid-template-columns:1fr}nav{border-right:none;border-bottom:1px solid var(--border)}main{padding:20px 16px 60px}}
+</style>
+</head>
+<body>
+{% if admin %}
+<div class="shell">
+  <nav>
+    <h1>FreeSkyVPN</h1>
+    <a href="/admin" class="{{ 'on' if page=='dashboard' }}">Обзор</a>
+    <a href="/admin/nodes" class="{{ 'on' if page=='nodes' }}">Ноды</a>
+    <a href="/admin/users" class="{{ 'on' if page=='users' }}">Пользователи</a>
+    <a href="/admin/plans" class="{{ 'on' if page=='plans' }}">Тарифы</a>
+    <a href="/admin/sni" class="{{ 'on' if page=='sni' }}">SNI-пул</a>
+    <div class="sep">
+      <a href="/admin/events" class="{{ 'on' if page=='events' }}">События</a>
+      <a href="/admin/audit" class="{{ 'on' if page=='audit' }}">Журнал действий</a>
+      <a href="/admin/logout">Выйти ({{ admin }})</a>
+    </div>
+  </nav>
+  <main>
+    {% if not secrets_ok %}
+    <div class="flash err">
+      <b>SECRETS_KEY не задан.</b> Учётные данные нод нельзя сохранить в зашифрованном виде,
+      добавление нод отключено. Задайте переменную и перезапустите головной сервер.
+    </div>
+    {% endif %}
+    {% for kind, message in messages %}
+      <div class="flash {{ kind }}">{{ message }}</div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% else %}
+  {% block anon %}{% endblock %}
+{% endif %}
+</body>
+</html>

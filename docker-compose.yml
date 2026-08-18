@@ -1,0 +1,68 @@
+# The whole service on one host: database, head (API + admin panel), bot.
+#
+# The head needs an xray binary of its own — not to serve users, but to
+# generate Reality keys and to run the tunnel it falls back to when its
+# direct connection to a node is blocked. It is installed in the image.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-freeskyvpn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-freeskyvpn}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-freeskyvpn}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  head:
+    build:
+      context: .
+      dockerfile: head/Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-freeskyvpn}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-freeskyvpn}
+      HEAD_SECRET_KEY: ${HEAD_SECRET_KEY:?run: python -m app.cli generate-key}
+      SECRETS_KEY: ${SECRETS_KEY:?run: python -m app.cli generate-key}
+      ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-true}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+      HEAD_CLIENT_CERT_PATH: /etc/freeskyvpn/head_client_cert.pem
+      HEAD_CLIENT_KEY_PATH: /etc/freeskyvpn/head_client_key.pem
+      NODE_CERT_CACHE_DIR: /var/lib/freeskyvpn/node_certs
+      XRAY_CLIENT_BINARY_PATH: /usr/local/bin/xray
+      BOOTSTRAP_SCRIPT_PATH: /provisioning/bootstrap_node.sh
+    volumes:
+      # The head's mTLS identity: every node is provisioned to trust exactly
+      # this certificate, so losing it means re-provisioning the fleet.
+      - ./secrets:/etc/freeskyvpn
+      - nodecerts:/var/lib/freeskyvpn/node_certs
+    ports:
+      # Bound to loopback: put a TLS-terminating reverse proxy in front.
+      # The admin panel accepts a password, so exposing this port directly
+      # would mean logins in cleartext.
+      - "127.0.0.1:8000:8000"
+
+  bot:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    restart: always
+    depends_on:
+      - head
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}
+      HEAD_API_URL: http://head:8000
+      HEAD_SERVICE_TOKEN: ${HEAD_SECRET_KEY}
+      PAYMENT_PROVIDER_TOKEN: ${PAYMENT_PROVIDER_TOKEN:-}
+
+volumes:
+  pgdata:
+  nodecerts:

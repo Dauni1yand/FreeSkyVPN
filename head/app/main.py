@@ -2,8 +2,11 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 
+from app.admin.deps import NotLoggedIn
+from app.admin.router import router as admin_router
 from app.api.routers import connect, health, nodes, pushes, sni, subscriptions, users
 from app.config import get_settings
 from app.services.scheduler import sni_maintenance_loop, tier_reconciliation_loop
@@ -18,11 +21,13 @@ async def lifespan(_app: FastAPI):
     Both live in app/services/scheduler.py.
     """
     tasks = []
-    if get_settings().sni_maintenance_enabled:
-        tasks.append(asyncio.create_task(sni_maintenance_loop()))
-        logger.info("SNI maintenance loop started")
-    tasks.append(asyncio.create_task(tier_reconciliation_loop()))
-    logger.info("tier reconciliation loop started")
+    settings = get_settings()
+    if settings.background_jobs_enabled:
+        if settings.sni_maintenance_enabled:
+            tasks.append(asyncio.create_task(sni_maintenance_loop()))
+            logger.info("SNI maintenance loop started")
+        tasks.append(asyncio.create_task(tier_reconciliation_loop()))
+        logger.info("tier reconciliation loop started")
     try:
         yield
     finally:
@@ -41,3 +46,9 @@ app.include_router(connect.router)
 app.include_router(subscriptions.router)
 app.include_router(pushes.router)
 app.include_router(sni.router)
+app.include_router(admin_router)
+
+
+@app.exception_handler(NotLoggedIn)
+async def _redirect_to_login(_request: Request, _exc: NotLoggedIn) -> RedirectResponse:
+    return RedirectResponse("/admin/login", status_code=303)

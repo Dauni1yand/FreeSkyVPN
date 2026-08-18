@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}SNI-пул{% endblock %}
+{% block content %}
+<h2>SNI-пул</h2>
+<p class="sub">Домены, которыми прикрываются инбаунды. Пополняется автоматически.</p>
+
+<div class="card">
+  <div class="row">
+    <form method="post" action="/admin/sni/refresh">
+      <button>Обновить пул из источника</button>
+    </form>
+    {% for n in nodes %}
+    <form method="post" action="/admin/sni/probe/{{ n.id }}">
+      <button class="ghost">Проверить с {{ n.host }}</button>
+    </form>
+    {% endfor %}
+  </div>
+  <p style="font-size:13px;color:var(--muted);margin:12px 0 0">
+    Проверка идёт <b>с ноды</b>, а не с головы: Reality ретранслирует хендшейк
+    с ноды на этот домен, поэтому важна доступность и задержка именно оттуда.
+  </p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;font-size:15px">Добавить вручную</h3>
+  <form method="post" action="/admin/sni/add" class="row">
+    <input name="domain" placeholder="www.example-vendor.com" required style="max-width:340px">
+    <button type="submit">Добавить</button>
+  </form>
+</div>
+
+<div class="card">
+  {% if candidates %}
+  <div class="wrap"><table>
+    <tr><th>Домен</th><th>Источник</th><th class="num">Сожжён раз</th><th>Проверки</th><th>Статус</th><th></th></tr>
+    {% for c in candidates %}
+    <tr>
+      <td class="mono">{{ c.domain }}</td>
+      <td><span class="pill dim">{{ c.source }}</span></td>
+      <td class="num">{{ c.burn_count }}</td>
+      <td style="font-size:12.5px">
+        {% if c.probes %}
+          {% for p in c.probes %}
+            <div><span class="pill {{ 'ok' if p.ok else 'bad' }}">{{ 'ok' if p.ok else 'нет' }}</span>
+              <span class="mono">{{ p.host }}</span>
+              {% if p.ok and p.latency_ms is not none %}<span style="color:var(--muted)">{{ p.latency_ms }} мс</span>{% endif %}
+              {% if not p.ok and p.error %}<span style="color:var(--muted)">{{ p.error[:60] }}</span>{% endif %}
+            </div>
+          {% endfor %}
+        {% else %}<span style="color:var(--muted)">не проверялся</span>{% endif %}
+      </td>
+      <td><span class="pill {{ 'ok' if c.active else 'dim' }}">{{ 'активен' if c.active else 'выключен' }}</span></td>
+      <td>
+        <form method="post" action="/admin/sni/{{ c.id }}/toggle">
+          <button class="ghost" style="padding:5px 9px;font-size:13px">
+            {{ 'Выключить' if c.active else 'Включить' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}
+  <p class="empty">Пул пуст. Нажмите «Обновить пул из источника» или добавьте домен вручную.</p>
+  {% endif %}
+</div>
+{% endblock %}

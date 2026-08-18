@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Ноды{% endblock %}
+{% block content %}
+<h2>Ноды</h2>
+<p class="sub">Добавление, тариф, доступ по SSH</p>
+
+<div class="card">
+  <h3 style="margin-top:0;font-size:15px">Добавить ноду</h3>
+  <p style="font-size:13.5px;color:var(--muted);margin:0 0 4px">
+    Пароль используется дважды — чтобы установить ключ головы и запустить bootstrap —
+    после чего меняется на случайный. Введённый вами пароль перестанет действовать.
+  </p>
+  <form method="post" action="/admin/nodes/add">
+    <div class="grid2">
+      <div>
+        <label for="host">IP или хост</label>
+        <input id="host" name="host" required placeholder="203.0.113.10" {{ 'disabled' if not secrets_ok }}>
+        <label for="country">Страна (метка для админа)</label>
+        <input id="country" name="country" required placeholder="nl" {{ 'disabled' if not secrets_ok }}>
+        <label for="tier">Тариф</label>
+        <select id="tier" name="tier" {{ 'disabled' if not secrets_ok }}>
+          <option value="free">free — шейпится через tc</option>
+          <option value="paid">paid — без ограничения скорости</option>
+        </select>
+        <label for="shaped_mbit">Лимит free-ноды, Мбит/с (делится между её пользователями)</label>
+        <input id="shaped_mbit" name="shaped_mbit" type="number" value="10" min="1" {{ 'disabled' if not secrets_ok }}>
+      </div>
+      <div>
+        <label for="ssh_user">SSH-пользователь</label>
+        <input id="ssh_user" name="ssh_user" value="root" required {{ 'disabled' if not secrets_ok }}>
+        <label for="ssh_port">SSH-порт</label>
+        <input id="ssh_port" name="ssh_port" type="number" value="22" required {{ 'disabled' if not secrets_ok }}>
+        <label for="ssh_password">SSH-пароль</label>
+        <input id="ssh_password" name="ssh_password" type="password" required
+               autocomplete="new-password" {{ 'disabled' if not secrets_ok }}>
+        <label for="control_sni">SNI канала управления</label>
+        <input id="control_sni" name="control_sni" value="www.microsoft.com" {{ 'disabled' if not secrets_ok }}>
+      </div>
+    </div>
+    <button type="submit" style="margin-top:16px" {{ 'disabled' if not secrets_ok }}>
+      Подключить ноду
+    </button>
+    <span style="font-size:13px;color:var(--muted);margin-left:10px">
+      Займёт 1–3 минуты: установка Docker, Xray и marzban-node.
+    </span>
+  </form>
+</div>
+
+{% if provision_log %}
+<div class="card">
+  <h3 style="margin-top:0;font-size:15px">Лог последнего подключения</h3>
+  <pre>{{ provision_log }}</pre>
+</div>
+{% endif %}
+
+<div class="card">
+  <h3 style="margin-top:0;font-size:15px">Список</h3>
+  {% if nodes %}
+  <div class="wrap"><table>
+    <tr><th>Хост</th><th>Страна</th><th>Тариф</th><th>Статус</th><th>Канал</th>
+        <th class="num">Юзеров</th><th class="num">Инбаундов</th><th>SSH-пароль</th><th></th></tr>
+    {% for n in nodes %}
+    <tr>
+      <td class="mono">{{ n.host }}<div style="color:var(--muted);font-size:12px">:{{ n.ssh_port }} {{ n.ssh_user }}</div></td>
+      <td>{{ n.country }}</td>
+      <td>
+        <form method="post" action="/admin/nodes/{{ n.id }}/tier" class="row" style="gap:4px">
+          <select name="tier" onchange="this.form.submit()" style="width:auto;padding:4px 6px;font-size:13px">
+            <option value="free" {{ 'selected' if n.tier.value=='free' }}>free</option>
+            <option value="paid" {{ 'selected' if n.tier.value=='paid' }}>paid</option>
+          </select>
+        </form>
+        {% if n.tier.value=='free' and n.shaped_mbit %}
+        <div style="color:var(--muted);font-size:12px">{{ n.shaped_mbit }} Мбит/с</div>{% endif %}
+      </td>
+      <td><span class="pill {{ 'ok' if n.status.value=='active' else 'warn' }}">{{ n.status.value }}</span></td>
+      <td><span class="pill {{ {'active':'ok','degraded':'warn','isolated':'bad'}[n.channel_state.value] }}">
+        {{ n.channel_state.value }}</span>
+        {% if n.last_seen_at %}<div style="color:var(--muted);font-size:12px">
+          {{ n.last_seen_at.strftime('%d.%m %H:%M') }}</div>{% endif %}
+      </td>
+      <td class="num">{{ n.load }}</td>
+      <td class="num">{{ n.inbound_count }}</td>
+      <td style="font-size:12.5px;color:var(--muted)">
+        {% if n.ssh_password_rotated_at %}{{ n.ssh_password_rotated_at.strftime('%d.%m.%Y') }}
+        {% else %}<span class="pill warn">не менялся</span>{% endif %}
+      </td>
+      <td>
+        <div class="row" style="gap:6px">
+          <form method="post" action="/admin/nodes/{{ n.id }}/rotate-password"
+                onsubmit="return confirm('Сменить SSH-пароль на {{ n.host }}? Старый перестанет работать.')">
+            <button class="ghost" style="padding:5px 9px;font-size:13px">Сменить пароль</button>
+          </form>
+          <form method="post" action="/admin/nodes/{{ n.id }}/status">
+            <input type="hidden" name="status" value="{{ 'draining' if n.status.value=='active' else 'active' }}">
+            <button class="ghost" style="padding:5px 9px;font-size:13px">
+              {{ 'Вывести' if n.status.value=='active' else 'Вернуть' }}</button>
+          </form>
+          <form method="post" action="/admin/nodes/{{ n.id }}/delete"
+                onsubmit="return confirm('Удалить {{ n.host }} вместе с инбаундами? Пользователей придётся переселить.')">
+            <button class="danger" style="padding:5px 9px;font-size:13px">Удалить</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="empty">Нод пока нет.</p>{% endif %}
+</div>
+{% endblock %}

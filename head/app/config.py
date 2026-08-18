@@ -62,6 +62,20 @@ class Settings(BaseSettings):
     # Set false to run maintenance from cron (POST /api/v1/sni/refresh) instead
     # of in-process — useful when several head replicas would otherwise all probe.
     sni_maintenance_enabled: bool = True
+    # Master switch for every in-process background loop.
+    background_jobs_enabled: bool = True
+
+    # --- admin panel ---
+    # Encrypts node SSH credentials at rest (app/services/crypto.py).
+    # Losing it makes stored credentials unrecoverable; changing it orphans them.
+    secrets_key: str = "change-me"
+    admin_session_hours: int = 12
+    # Set false behind a reverse proxy that does not terminate TLS (dev only) —
+    # a session cookie sent over plain HTTP can be lifted off the wire.
+    admin_cookie_secure: bool = True
+    # Where bootstrap_node.sh lives. Differs between a source checkout and the
+    # container image, so it is configuration rather than a computed guess.
+    bootstrap_script_path: str = ""
 
     # --- tiering (phase 4) ---
     tier_reconcile_interval_minutes: int = 30

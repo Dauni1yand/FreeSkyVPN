@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}События{% endblock %}
+{% block content %}
+<h2>События</h2>
+<p class="sub">Что происходило с каналами управления и на что жаловались пользователи</p>
+
+<div class="grid2">
+  <div class="card">
+    <h3 style="margin-top:0;font-size:15px">Переходы канала управления</h3>
+    {% if events %}
+    <div class="wrap"><table>
+      <tr><th>Когда</th><th>Нода</th><th>Переход</th><th>Причина</th></tr>
+      {% for e in events %}
+      <tr>
+        <td class="mono">{{ e.occurred_at.strftime('%d.%m %H:%M') }}</td>
+        <td class="mono">{{ e.host or '—' }}</td>
+        <td><span class="pill {{ {'active':'ok','degraded':'warn','isolated':'bad'}.get(e.to_state,'dim') }}">
+          {{ e.from_state }} → {{ e.to_state }}</span></td>
+        <td style="font-size:12.5px;color:var(--muted)">{{ (e.detail or '')[:90] }}</td>
+      </tr>
+      {% endfor %}
+    </table></div>
+    {% else %}<p class="empty">Пока пусто.</p>{% endif %}
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;font-size:15px">Жалобы «не работает»</h3>
+    {% if reports %}
+    <div class="wrap"><table>
+      <tr><th>Когда</th><th>Инбаунд</th><th>Нода</th></tr>
+      {% for r in reports %}
+      <tr>
+        <td class="mono">{{ r.reported_at.strftime('%d.%m %H:%M') }}</td>
+        <td class="mono">{{ r.sni }}:{{ r.port }}</td>
+        <td class="mono">{{ r.host }}</td>
+      </tr>
+      {% endfor %}
+    </table></div>
+    {% else %}<p class="empty">Жалоб не было.</p>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;font-size:15px">Очередь доставки конфигов</h3>
+  {% if pushes %}
+  <div class="wrap"><table>
+    <tr><th>Создан</th><th>Пользователь</th><th>Причина</th><th>Статус</th></tr>
+    {% for p in pushes %}
+    <tr>
+      <td class="mono">{{ p.created_at.strftime('%d.%m %H:%M') }}</td>
+      <td class="mono" style="font-size:12px">{{ p.user_id }}</td>
+      <td><span class="pill dim">{{ p.reason.value }}</span></td>
+      <td>{% if p.delivered_at %}<span class="pill ok">доставлен</span>
+          {% else %}<span class="pill warn">в очереди</span>{% endif %}
+          {% if p.delivery_error %}<div style="font-size:12px;color:var(--muted)">{{ p.delivery_error[:70] }}</div>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="empty">Очередь пуста.</p>{% endif %}
+</div>
+{% endblock %}
