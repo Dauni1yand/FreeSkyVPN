@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    UniqueConstraint,
     Uuid,
     func,
 )
@@ -59,10 +60,15 @@ class Subscription(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
+    # The provider's own payment id, unique per provider. Payment providers
+    # retry their notifications, so without this a repeated delivery of the
+    # same Telegram `successful_payment` would credit the subscription twice.
+    __table_args__ = (UniqueConstraint("provider", "external_id", name="uq_payment_provider_external_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
     provider: Mapped[str] = mapped_column(String(32))  # telegram / yookassa / ...
+    external_id: Mapped[str] = mapped_column(String(255))
     amount: Mapped[float] = mapped_column(Numeric(10, 2))
     currency: Mapped[str] = mapped_column(String(8), default="RUB")
     status: Mapped[PaymentStatus] = mapped_column(

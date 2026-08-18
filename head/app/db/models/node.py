@@ -97,6 +97,11 @@ class Inbound(Base):
     state: Mapped[InboundState] = mapped_column(Enum(InboundState, name="inbound_state"), default=InboundState.active)
     fail_count: Mapped[int] = mapped_column(Integer, default=0)
     fail_window_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When this inbound was declared dead. A dead inbound is dropped from the
+    # node's config, which frees its port for reuse — but a port that died
+    # moments ago is a poor choice for the replacement, so the timestamp
+    # drives how long it stays deprioritised (see inbound_factory.pick_port).
+    died_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     is_control_channel: Mapped[bool] = mapped_column(Boolean, default=False)

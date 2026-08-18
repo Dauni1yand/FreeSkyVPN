@@ -14,10 +14,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.api.auth import ServiceAuth
 from app.api.deps import DbSession
 from app.db.models.node import Inbound, Node, NodeChannelState, NodeStatus
 
-router = APIRouter(prefix="/api/v1/nodes", tags=["nodes"])
+router = APIRouter(prefix="/api/v1/nodes", tags=["nodes"], dependencies=[ServiceAuth])
 
 
 class ControlInboundIn(BaseModel):

@@ -42,8 +42,8 @@ def test_assign_creates_an_inbound_when_none_is_live(db, pushes):
     created = db.get(Assignment, db.query(Assignment).one().id)
     assert str(created.inbound_id) == config.inbound_id
     assert created.inbound.state == InboundState.active
-    # 443 belonged to the dead inbound and is deliberately not recycled: if the
-    # port was the blocked part, reusing it would reproduce the block.
+    # 443 belonged to the dead inbound. Ports are recycled, but not while the
+    # death is still fresh — see tests/test_port_reuse.py.
     assert created.inbound.port == 8443
 
 

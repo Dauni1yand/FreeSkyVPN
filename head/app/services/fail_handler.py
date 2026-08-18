@@ -39,6 +39,7 @@ from app.services.config_selector import (
     active_assignment,
     assign_config,
 )
+from app.services.timeutil import as_aware
 
 logger = logging.getLogger(__name__)
 
@@ -63,19 +64,12 @@ class FailureOutcome:
     users_migrated: int  # including the reporter
 
 
-def _as_aware(value: datetime | None) -> datetime | None:
-    """SQLite hands back naive datetimes even for timezone-aware columns."""
-    if value is None:
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-
-
 def _check_cooldown(db: Session, user: User) -> None:
     cooldown = get_settings().fail_report_cooldown_seconds
     last = db.scalar(
         select(FailReport).where(FailReport.user_id == user.id).order_by(FailReport.reported_at.desc())
     )
-    last_at = _as_aware(last.reported_at) if last else None
+    last_at = as_aware(last.reported_at) if last else None
     if last_at is None:
         return
 
@@ -88,7 +82,7 @@ def _bump_fail_count(inbound: Inbound) -> None:
     """Count the report inside a sliding window, restarting the window when it lapses."""
     settings = get_settings()
     now = datetime.now(UTC)
-    window_start = _as_aware(inbound.fail_window_started_at)
+    window_start = as_aware(inbound.fail_window_started_at)
 
     if window_start is None or now - window_start > timedelta(minutes=settings.inbound_fail_window_minutes):
         inbound.fail_window_started_at = now
@@ -113,7 +107,7 @@ def _recently_dead_inbound_count(db: Session, node: Node) -> int:
     inbounds = db.scalars(
         select(Inbound).where(Inbound.node_id == node.id, Inbound.state == InboundState.dead)
     ).all()
-    return sum(1 for ib in inbounds if (_as_aware(ib.fail_window_started_at) or cutoff) >= cutoff)
+    return sum(1 for ib in inbounds if (as_aware(ib.died_at) or cutoff) >= cutoff)
 
 
 def report_failure(db: Session, user: User) -> FailureOutcome:
@@ -143,6 +137,7 @@ def report_failure(db: Session, user: User) -> FailureOutcome:
 
     logger.warning("inbound %s declared dead after %d reports", inbound.id, inbound.fail_count)
     inbound.state = InboundState.dead
+    inbound.died_at = datetime.now(UTC)
     _burn_sni(db, inbound.sni)
     db.flush()
 

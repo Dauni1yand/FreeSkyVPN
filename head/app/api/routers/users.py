@@ -14,10 +14,11 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.api.auth import ServiceAuth
 from app.api.deps import DbSession
 from app.db.models.user import AuthIdentity, AuthProvider, User
 
-router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+router = APIRouter(prefix="/api/v1/auth", tags=["auth"], dependencies=[ServiceAuth])
 
 
 class TelegramLoginRequest(BaseModel):

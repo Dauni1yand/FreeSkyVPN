@@ -19,13 +19,15 @@ operation that can be rolled back if the push then fails.
 from __future__ import annotations
 
 import random
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models.node import Inbound, Node, SniCandidate
+from app.db.models.node import Inbound, InboundState, Node, SniCandidate
 from app.services import keygen
+from app.services.timeutil import as_aware
 from app.services.transports import DEFAULT_TRANSPORT, TransportSpec
 
 
@@ -34,13 +36,36 @@ class NoSniAvailableError(RuntimeError):
 
 
 def pick_port(db: Session, node: Node) -> int:
-    used = set(
-        db.scalars(select(Inbound.port).where(Inbound.node_id == node.id)).all()
-    )
+    """Choose a port for a new inbound on this node.
+
+    Ports are recycled. A dead inbound is dropped from the node's config, so
+    its port is genuinely free to bind again, and the supply of ports that
+    look natural for TLS is small enough that retiring one permanently after
+    a single block would exhaust the preferred list within a handful of
+    incidents and push every later inbound onto conspicuous high ports.
+
+    The one thing recycling must not do is hand back the port that was just
+    blocked, since that would reproduce the block immediately. So a port
+    stays deprioritised while its death is still inside the fail window, and
+    becomes an ordinary candidate again afterwards.
+    """
     settings = get_settings()
+    rows = db.execute(
+        select(Inbound.port, Inbound.state, Inbound.died_at).where(Inbound.node_id == node.id)
+    ).all()
+
+    # A live inbound holds its port open — that one is a hard conflict.
+    live_ports = {port for port, state, _ in rows if state != InboundState.dead}
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=settings.inbound_fail_window_minutes)
+    recently_burned = {
+        port
+        for port, state, died_at in rows
+        if state == InboundState.dead and (as_aware(died_at) or cutoff) >= cutoff
+    }
 
     for port in settings.preferred_ports:
-        if port not in used:
+        if port not in live_ports and port not in recently_burned:
             return port
 
     low, high = settings.fallback_port_range
@@ -49,10 +74,16 @@ def pick_port(db: Session, node: Node) -> int:
     # simpler and cannot loop forever.
     for _ in range(50):
         port = random.randint(low, high)
-        if port not in used:
+        if port not in live_ports:
             return port
     for port in range(low, high + 1):
-        if port not in used:
+        if port not in live_ports:
+            return port
+
+    # Last resort: a preferred port that was burned very recently still beats
+    # having no inbound to hand the user at all.
+    for port in settings.preferred_ports:
+        if port not in live_ports:
             return port
     raise RuntimeError(f"no free port left on node {node.id}")
 

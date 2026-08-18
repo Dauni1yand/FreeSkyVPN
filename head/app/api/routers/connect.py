@@ -11,6 +11,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
+from app.api.auth import ServiceAuth
 from app.api.deps import DbSession
 from app.db.models.user import User
 from app.services.config_selector import NoCapacityError, assign_config
@@ -20,7 +21,7 @@ from app.services.fail_handler import (
     report_failure,
 )
 
-router = APIRouter(prefix="/api/v1", tags=["config"])
+router = APIRouter(prefix="/api/v1", tags=["config"], dependencies=[ServiceAuth])
 
 
 class ConnectRequest(BaseModel):
