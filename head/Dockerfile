@@ -12,10 +12,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY head/pyproject.toml /app/
-RUN pip install --no-cache-dir -e .
-
+# Code before install: an editable install run against a bare pyproject.toml
+# finds no packages, and `app` then stays unimportable even after the source
+# lands — it only appears to work because the working directory happens to be
+# on sys.path.
 COPY head/ /app/
+RUN pip install --no-cache-dir .
 # provision_node.py runs bootstrap_node.sh on the node; the admin panel reads
 # the same script from this path.
 COPY provisioning/ /provisioning/

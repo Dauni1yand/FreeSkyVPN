@@ -9,7 +9,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-freeskyvpn}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
       POSTGRES_DB: ${POSTGRES_DB:-freeskyvpn}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -29,8 +29,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-freeskyvpn}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-freeskyvpn}
-      HEAD_SECRET_KEY: ${HEAD_SECRET_KEY:?run: python -m app.cli generate-key}
-      SECRETS_KEY: ${SECRETS_KEY:?run: python -m app.cli generate-key}
+      HEAD_SECRET_KEY: "${HEAD_SECRET_KEY:?generate one on the host, see DEPLOY.md step 1}"
+      SECRETS_KEY: "${SECRETS_KEY:?generate one on the host, see DEPLOY.md step 1}"
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-true}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
@@ -58,7 +58,7 @@ services:
     depends_on:
       - head
     environment:
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}"
       HEAD_API_URL: http://head:8000
       HEAD_SERVICE_TOKEN: ${HEAD_SECRET_KEY}
       PAYMENT_PROVIDER_TOKEN: ${PAYMENT_PROVIDER_TOKEN:-}

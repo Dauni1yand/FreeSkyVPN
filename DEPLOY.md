@@ -18,12 +18,16 @@ git clone <репозиторий> freeskyvpn && cd freeskyvpn
 cp .env.example .env
 ```
 
-Сгенерируйте два ключа и впишите их в `.env`:
+Сгенерируйте два ключа и впишите их в `.env`. Делается на хосте, а не через
+compose: стек намеренно отказывается стартовать с пустыми ключами, так что
+через него их не получить.
 
 ```bash
-docker compose run --rm --no-deps head python -m app.cli generate-key   # HEAD_SECRET_KEY
-docker compose run --rm --no-deps head python -m app.cli generate-key   # SECRETS_KEY
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # HEAD_SECRET_KEY
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # SECRETS_KEY
 ```
+
+Если Python на хосте нет: `openssl rand -base64 36`.
 
 - `HEAD_SECRET_KEY` — подписывает сессии админки и служит токеном между
   головой и ботом. Меняете — все разлогинятся, боту нужен новый токен.
