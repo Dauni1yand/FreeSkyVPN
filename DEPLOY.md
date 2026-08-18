@@ -6,15 +6,63 @@
 ## 0. Что нужно
 
 - Сервер с Docker и Docker Compose.
-- Домен, направленный на этот сервер, и HTTPS перед ним (см. шаг 5).
+- Домен, направленный на этот сервер, и HTTPS перед ним (см. шаг 6).
   Админка принимает пароль — по чистому HTTP его перехватят.
 - Хотя бы одна заграничная нода: чистый Ubuntu/Debian, доступ по SSH с
   паролем (пароль вы введёте один раз, дальше он сменится сам).
 
-## 1. Ключи и конфигурация
+## 1. Доступ к репозиторию
+
+Если репозиторий приватный — не делайте его публичным «на минутку»: боты
+непрерывно сканируют GitHub именно в расчёте на такие окна, и снятая копия
+останется у них после того, как вы вернёте приватность. Вместо этого дайте
+серверу отдельный ключ только на чтение.
+
+На сервере:
 
 ```bash
-git clone <репозиторий> freeskyvpn && cd freeskyvpn
+ssh-keygen -t ed25519 -C "freeskyvpn-server" -f ~/.ssh/freeskyvpn -N ""
+cat ~/.ssh/freeskyvpn.pub
+```
+
+Вывод последней команды скопируйте в GitHub: репозиторий → **Settings** →
+слева **Deploy keys** → **Add deploy key**. Заголовок любой, ключ вставить
+целиком. Галочку **Allow write access оставьте снятой** — серверу нужно
+только читать, а ключ на сервере украсть проще, чем на вашей машине.
+
+Чтобы не подставлять ключ в каждую команду, пропишите его в SSH-конфиг:
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+Host github-freeskyvpn
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/freeskyvpn
+    IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+```
+
+`IdentitiesOnly yes` здесь не для красоты: без него ssh сначала переберёт все
+остальные ключи, а GitHub разорвёт соединение после нескольких неудачных
+попыток — и вы получите «Permission denied» при полностью верном ключе.
+
+Проверка и клонирование:
+
+```bash
+ssh -T git@github-freeskyvpn      # ждём "Hi <owner>/<repo>! You've successfully authenticated"
+git clone github-freeskyvpn:<владелец>/<репозиторий>.git freeskyvpn
+cd freeskyvpn
+```
+
+Дальше обновляться — обычный `git pull`, ключ подставится сам.
+
+Deploy key привязан к одному репозиторию: тот же ключ во второй репозиторий
+GitHub не примет, для него нужно генерировать новый.
+
+## 2. Конфигурация
+
+```bash
 cp .env.example .env
 ```
 
@@ -37,7 +85,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # SECRETS_KEY
 
 Заполните `POSTGRES_PASSWORD` и `TELEGRAM_BOT_TOKEN` (от @BotFather).
 
-## 2. Сертификат головы
+## 3. Сертификат головы
 
 Каждая нода настраивается доверять **ровно этому** сертификату. Потеряете —
 ноды придётся переустанавливать.
@@ -47,7 +95,7 @@ mkdir -p secrets && ./provisioning/generate_head_client_cert.sh secrets/
 chmod 600 secrets/head_client_key.pem
 ```
 
-## 3. Запуск
+## 4. Запуск
 
 ```bash
 docker compose up -d --build
@@ -56,7 +104,7 @@ docker compose logs -f head     # дождитесь "Application startup comple
 
 Миграции применяются при старте головы автоматически.
 
-## 4. Администратор
+## 5. Администратор
 
 ```bash
 docker compose exec head python -m app.cli create-admin admin
@@ -65,7 +113,7 @@ docker compose exec head python -m app.cli create-admin admin
 Пароль будет напечатан один раз — сохраните. Повторный запуск той же команды
 сбрасывает пароль, это же и способ восстановления доступа.
 
-## 5. HTTPS
+## 6. HTTPS
 
 Голова слушает `127.0.0.1:8000` и наружу не торчит намеренно. Поставьте перед
 ней Caddy или nginx с сертификатом. Пример для Caddy (`/etc/caddy/Caddyfile`):
@@ -78,7 +126,7 @@ admin.вашдомен.ru {
 
 Оставьте `ADMIN_COOKIE_SECURE=true` — тогда cookie сессии не уйдёт по HTTP.
 
-## 6. Подключение ноды
+## 7. Подключение ноды
 
 Админка → **Ноды** → форма:
 
@@ -113,7 +161,7 @@ Reality-туннель.
 приниматься на 80% от неё, остаток держится для платящих. Когда на дашборде
 загрузка подходит к этой отметке — пора добавлять ноду.
 
-## 7. SNI-пул
+## 8. SNI-пул
 
 Админка → **SNI-пул** → «Обновить пул из источника», затем «Проверить с
 &lt;ноды&gt;». Проверка идёт с ноды, а не с головы: Reality ретранслирует
@@ -122,7 +170,7 @@ Reality-туннель.
 Если источник популярности недоступен с вашего сервера, задайте
 `SNI_SEED_DOMAINS` в `.env` или добавьте домены вручную на той же странице.
 
-## 8. Проверка
+## 9. Проверка
 
 ```bash
 python3 smoke_test.py --url http://127.0.0.1:8000 \
@@ -154,6 +202,12 @@ python3 smoke_test.py --url http://127.0.0.1:8000 \
 
 **Забыт пароль админки.** `docker compose exec head python -m app.cli
 create-admin admin` — задаёт новый.
+
+**`git clone` просит пароль или отвечает Permission denied.** Ключ не
+подхватился. Проверьте `ssh -T git@github-freeskyvpn` — там будет причина.
+Частое: забыт `IdentitiesOnly yes` (ssh перебирает чужие ключи и упирается в
+лимит попыток), права на `~/.ssh/freeskyvpn` шире 600, или клонируете по
+`git@github.com:` вместо `github-freeskyvpn:` — тогда конфиг не применяется.
 
 ## Резервное копирование
 
