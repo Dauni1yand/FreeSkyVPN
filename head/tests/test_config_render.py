@@ -1,0 +1,75 @@
+import json
+import uuid
+
+from app.db.models.node import Assignment, Inbound, InboundState
+from app.node_manager.config_render import render_node_config
+
+
+def _make_customer_inbound(assignments=()):
+    inbound = Inbound(
+        id=uuid.uuid4(),
+        node_id=uuid.uuid4(),
+        port=443,
+        sni="www.cloudflare.com",
+        reality_private_key="priv",
+        reality_public_key="pub",
+        reality_short_id="ab12",
+    )
+    inbound.assignments = list(assignments)
+    return inbound
+
+
+def test_control_channel_inbound_renders_single_hardcoded_client():
+    control_uuid = str(uuid.uuid4())
+    inbound = Inbound(
+        id=uuid.uuid4(),
+        node_id=uuid.uuid4(),
+        port=8443,
+        sni="www.microsoft.com",
+        reality_private_key="priv",
+        reality_public_key="pub",
+        reality_short_id="cd34",
+        is_control_channel=True,
+        control_client_uuid=control_uuid,
+    )
+
+    config = json.loads(render_node_config([inbound]))
+
+    assert len(config["inbounds"]) == 1
+    clients = config["inbounds"][0]["settings"]["clients"]
+    assert clients == [{"id": control_uuid, "flow": "xtls-rprx-vision"}]
+
+
+def test_released_assignments_are_excluded_from_customer_inbound():
+    active = Assignment(user_id=uuid.uuid4(), xray_uuid=str(uuid.uuid4()), released_at=None)
+    released = Assignment(user_id=uuid.uuid4(), xray_uuid=str(uuid.uuid4()))
+    released.released_at = "2026-01-01"  # any non-None value marks it released
+
+    inbound = _make_customer_inbound([active, released])
+
+    config = json.loads(render_node_config([inbound]))
+    clients = config["inbounds"][0]["settings"]["clients"]
+    assert len(clients) == 1
+    assert clients[0]["id"] == active.xray_uuid
+
+
+def test_dead_customer_inbound_is_dropped_but_control_channel_is_not():
+    dead_customer = _make_customer_inbound()
+    dead_customer.state = InboundState.dead
+
+    control = Inbound(
+        id=uuid.uuid4(),
+        node_id=uuid.uuid4(),
+        port=8443,
+        sni="www.microsoft.com",
+        reality_private_key="priv",
+        reality_public_key="pub",
+        reality_short_id="cd34",
+        is_control_channel=True,
+        control_client_uuid=str(uuid.uuid4()),
+        state=InboundState.dead,  # even if something marked it dead, it must still render
+    )
+
+    config = json.loads(render_node_config([dead_customer, control]))
+    assert len(config["inbounds"]) == 1
+    assert config["inbounds"][0]["tag"] == str(control.id)
