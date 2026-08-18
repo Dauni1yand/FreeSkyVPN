@@ -39,8 +39,13 @@ class Settings(BaseSettings):
     node_dead_inbound_threshold: int = 2
     # Ports tried first for new inbounds: all of them are ordinary HTTPS ports,
     # so a Reality listener on one looks unremarkable.
-    preferred_ports: tuple[int, ...] = (443, 8443, 2053, 2083, 2087, 2096)
-    fallback_port_range: tuple[int, int] = (20000, 60000)
+    # Ports are chosen per tier — see app/services/tiers.py, which must stay
+    # in step with the tc filters installed on the node.
+    #
+    # How full a node may get before free users stop being admitted. The gap
+    # between this and 1.0 is the headroom held for paying users, which is
+    # what "paid goes first when load is high" means at admission time.
+    free_admission_ratio: float = 0.8
 
     # --- automatic SNI discovery (app/services/sni_discovery.py) ---
     sni_use_tranco: bool = True

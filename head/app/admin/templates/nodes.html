@@ -2,12 +2,14 @@
 {% block title %}Ноды{% endblock %}
 {% block content %}
 <h2>Ноды</h2>
-<p class="sub">Добавление, тариф, доступ по SSH</p>
+<p class="sub">Общие ноды: платные обслуживаются первыми при загрузке канала</p>
 
 <div class="card">
   <h3 style="margin-top:0;font-size:15px">Добавить ноду</h3>
   <p style="font-size:13.5px;color:var(--muted);margin:0 0 4px">
-    Пароль используется дважды — чтобы установить ключ головы и запустить bootstrap —
+    Нода обслуживает и бесплатных, и платных: <code class="inline-code">tc</code> различает
+    их по порту и отдаёт полосу платным первыми, когда канал загружен.
+    Пароль используется дважды — установить ключ головы и запустить bootstrap —
     после чего меняется на случайный. Введённый вами пароль перестанет действовать.
   </p>
   <form method="post" action="/admin/nodes/add">
@@ -17,13 +19,10 @@
         <input id="host" name="host" required placeholder="203.0.113.10" {{ 'disabled' if not secrets_ok }}>
         <label for="country">Страна (метка для админа)</label>
         <input id="country" name="country" required placeholder="nl" {{ 'disabled' if not secrets_ok }}>
-        <label for="tier">Тариф</label>
-        <select id="tier" name="tier" {{ 'disabled' if not secrets_ok }}>
-          <option value="free">free — шейпится через tc</option>
-          <option value="paid">paid — без ограничения скорости</option>
-        </select>
-        <label for="shaped_mbit">Лимит free-ноды, Мбит/с (делится между её пользователями)</label>
-        <input id="shaped_mbit" name="shaped_mbit" type="number" value="10" min="1" {{ 'disabled' if not secrets_ok }}>
+        <label for="uplink_mbit">Канал ноды, Мбит/с</label>
+        <input id="uplink_mbit" name="uplink_mbit" type="number" value="100" min="1" {{ 'disabled' if not secrets_ok }}>
+        <label for="capacity">Ёмкость, пользователей</label>
+        <input id="capacity" name="capacity" type="number" value="200" min="1" {{ 'disabled' if not secrets_ok }}>
       </div>
       <div>
         <label for="ssh_user">SSH-пользователь</label>
@@ -57,29 +56,29 @@
   <h3 style="margin-top:0;font-size:15px">Список</h3>
   {% if nodes %}
   <div class="wrap"><table>
-    <tr><th>Хост</th><th>Страна</th><th>Тариф</th><th>Статус</th><th>Канал</th>
-        <th class="num">Юзеров</th><th class="num">Инбаундов</th><th>SSH-пароль</th><th></th></tr>
+    <tr><th>Хост</th><th>Страна</th><th>Статус</th><th>Канал</th>
+        <th>Загрузка</th><th class="num">Инбаундов</th><th>SSH-пароль</th><th></th></tr>
     {% for n in nodes %}
     <tr>
       <td class="mono">{{ n.host }}<div style="color:var(--muted);font-size:12px">:{{ n.ssh_port }} {{ n.ssh_user }}</div></td>
       <td>{{ n.country }}</td>
-      <td>
-        <form method="post" action="/admin/nodes/{{ n.id }}/tier" class="row" style="gap:4px">
-          <select name="tier" onchange="this.form.submit()" style="width:auto;padding:4px 6px;font-size:13px">
-            <option value="free" {{ 'selected' if n.tier.value=='free' }}>free</option>
-            <option value="paid" {{ 'selected' if n.tier.value=='paid' }}>paid</option>
-          </select>
-        </form>
-        {% if n.tier.value=='free' and n.shaped_mbit %}
-        <div style="color:var(--muted);font-size:12px">{{ n.shaped_mbit }} Мбит/с</div>{% endif %}
-      </td>
       <td><span class="pill {{ 'ok' if n.status.value=='active' else 'warn' }}">{{ n.status.value }}</span></td>
       <td><span class="pill {{ {'active':'ok','degraded':'warn','isolated':'bad'}[n.channel_state.value] }}">
         {{ n.channel_state.value }}</span>
         {% if n.last_seen_at %}<div style="color:var(--muted);font-size:12px">
           {{ n.last_seen_at.strftime('%d.%m %H:%M') }}</div>{% endif %}
       </td>
-      <td class="num">{{ n.load }}</td>
+      <td>
+        <form method="post" action="/admin/nodes/{{ n.id }}/capacity" class="row" style="gap:4px">
+          <span class="num">{{ n.load }}</span><span style="color:var(--muted)">/</span>
+          <input name="capacity" type="number" value="{{ n.capacity }}" min="1"
+                 style="width:76px;padding:4px 6px;font-size:13px" onchange="this.form.submit()">
+        </form>
+        {% if n.free_cutoff is defined %}
+        <div style="color:var(--muted);font-size:12px">
+          free до {{ n.free_cutoff }}{% if n.uplink_mbit %} · {{ n.uplink_mbit }} Мбит/с{% endif %}</div>
+        {% endif %}
+      </td>
       <td class="num">{{ n.inbound_count }}</td>
       <td style="font-size:12.5px;color:var(--muted)">
         {% if n.ssh_password_rotated_at %}{{ n.ssh_password_rotated_at.strftime('%d.%m.%Y') }}

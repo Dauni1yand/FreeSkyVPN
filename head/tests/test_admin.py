@@ -26,7 +26,7 @@ from app.config import get_settings
 from app.db import models  # noqa: F401 - registers tables
 from app.db.base import Base
 from app.db.models.admin import AdminAudit
-from app.db.models.node import Node, NodeStatus, NodeTier, SniCandidate
+from app.db.models.node import Node, NodeStatus, SniCandidate
 from app.db.models.plan import Plan, Subscription, SubscriptionType
 from app.db.models.user import UserStatus
 from app.main import app
@@ -144,7 +144,7 @@ def test_every_page_renders_when_empty(auth, path):
 )
 def test_every_page_renders_with_data(auth, db, path):
     seed_snis(db)
-    node = make_node(db, tier=NodeTier.paid)
+    node = make_node(db)
     inbound = make_inbound(db, node)
     user = make_user(db)
     from tests.factories import make_assignment
@@ -173,9 +173,9 @@ def test_adding_a_node_reports_provisioning_failure_instead_of_crashing(auth, mo
             "country": "nl",
             "ssh_user": "root",
             "ssh_password": "hunter2",
-            "tier": "free",
             "ssh_port": "22",
-            "shaped_mbit": "10",
+            "uplink_mbit": "100",
+            "capacity": "200",
             "control_sni": "www.microsoft.com",
         },
     )
@@ -197,9 +197,9 @@ def test_successful_add_records_an_audit_entry(auth, db, monkeypatch):
             "country": "de",
             "ssh_user": "root",
             "ssh_password": "hunter2",
-            "tier": "paid",
             "ssh_port": "22",
-            "shaped_mbit": "10",
+            "uplink_mbit": "100",
+            "capacity": "200",
             "control_sni": "www.microsoft.com",
         },
     )
@@ -209,14 +209,26 @@ def test_successful_add_records_an_audit_entry(auth, db, monkeypatch):
     assert entry.admin_username == ADMIN_USER
 
 
-def test_changing_node_tier(auth, db):
-    node = make_node(db, tier=NodeTier.free)
+def test_changing_node_capacity(auth, db):
+    node = make_node(db, capacity=200)
     db.commit()
 
-    auth.post(f"/admin/nodes/{node.id}/tier", data={"tier": "paid"})
+    auth.post(f"/admin/nodes/{node.id}/capacity", data={"capacity": "50"})
 
     db.refresh(node)
-    assert node.tier == NodeTier.paid
+    assert node.capacity == 50
+
+
+def test_capacity_cannot_be_set_to_zero(auth, db):
+    """Zero would take the node out of rotation silently, which is what
+    draining is for — and much less obvious to an operator."""
+    node = make_node(db, capacity=200)
+    db.commit()
+
+    auth.post(f"/admin/nodes/{node.id}/capacity", data={"capacity": "0"})
+
+    db.refresh(node)
+    assert node.capacity == 1
 
 
 def test_draining_a_node_keeps_it_but_takes_it_out_of_rotation(auth, db):
@@ -259,7 +271,7 @@ def test_rotating_password_reports_ssh_failure(auth, db, monkeypatch):
 
 
 def test_acting_on_a_missing_node_is_reported_not_crashed(auth):
-    response = auth.post(f"/admin/nodes/{uuid.uuid4()}/tier", data={"tier": "paid"})
+    response = auth.post(f"/admin/nodes/{uuid.uuid4()}/capacity", data={"capacity": "10"})
     assert response.status_code == 200
     assert "не найдена" in response.text
 

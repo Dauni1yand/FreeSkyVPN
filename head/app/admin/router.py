@@ -29,7 +29,6 @@ from app.db.models.node import (
     Node,
     NodeChannelState,
     NodeStatus,
-    NodeTier,
     SniCandidate,
     SniProbe,
 )
@@ -135,8 +134,8 @@ def dashboard(request: Request, db: DbSession, admin: CurrentAdmin):
     stats = {
         "nodes_total": len(nodes),
         "nodes_active": sum(1 for n in nodes if n.status == NodeStatus.active),
-        "nodes_free": sum(1 for n in nodes if n.tier == NodeTier.free),
-        "nodes_paid": sum(1 for n in nodes if n.tier == NodeTier.paid),
+        "capacity_total": sum(n.capacity for n in nodes if n.status == NodeStatus.active),
+        "capacity_used": sum(n.load for n in nodes if n.status == NodeStatus.active),
         "nodes_degraded": sum(1 for n in nodes if n.channel_state == NodeChannelState.degraded),
         "nodes_isolated": sum(1 for n in nodes if n.channel_state == NodeChannelState.isolated),
         "users_total": db.scalar(select(func.count()).select_from(User)) or 0,
@@ -190,9 +189,13 @@ def _nodes_with_counts(db: DbSession) -> list[Node]:
     nodes = list(db.scalars(select(Node).order_by(Node.country, Node.host)).all())
     loads = _node_loads(db)
     inbounds = _inbound_counts(db)
+    ratio = get_settings().free_admission_ratio
     for node in nodes:
         node.load = loads.get(node.id, 0)
         node.inbound_count = inbounds.get(node.id, 0)
+        # Where free users stop being admitted; the gap above it is the
+        # headroom held for paying users.
+        node.free_cutoff = int(node.capacity * ratio)
     return nodes
 
 
@@ -204,9 +207,9 @@ def add_node(
     country: FormStr,
     ssh_user: FormStr,
     ssh_password: FormStr,
-    tier: FormStr = "free",
     ssh_port: FormInt = 22,
-    shaped_mbit: FormInt = 10,
+    uplink_mbit: FormInt = 100,
+    capacity: FormInt = 200,
     control_sni: FormStr = "www.microsoft.com",
 ):
     try:
@@ -217,8 +220,8 @@ def add_node(
             ssh_user=ssh_user.strip(),
             ssh_password=ssh_password,
             ssh_port=ssh_port,
-            tier=NodeTier(tier),
-            shaped_mbit=shaped_mbit,
+            uplink_mbit=uplink_mbit,
+            capacity=capacity,
             control_sni=control_sni.strip(),
         )
     except (provisioning.ProvisioningError, SshError) as exc:
@@ -227,7 +230,7 @@ def add_node(
         db.commit()
         return redirect_with_flash("/admin/nodes", "err", f"Не удалось подключить {host}: {exc}")
 
-    audit(db, admin, "node.add", host, f"tier={tier}")
+    audit(db, admin, "node.add", host, f"uplink={uplink_mbit}mbit capacity={capacity}")
     db.commit()
     return redirect_with_flash(
         "/admin/nodes", "ok", f"Нода {host} подключена. " + " · ".join(result.log)
@@ -253,24 +256,24 @@ def rotate_password(db: DbSession, admin: CurrentAdmin, node_id: uuid.UUID):
     )
 
 
-@router.post("/nodes/{node_id}/tier")
-def set_node_tier(db: DbSession, admin: CurrentAdmin, node_id: uuid.UUID, tier: FormStr):
+@router.post("/nodes/{node_id}/capacity")
+def set_node_capacity(db: DbSession, admin: CurrentAdmin, node_id: uuid.UUID, capacity: FormInt):
     node = db.get(Node, node_id)
     if node is None:
         return redirect_with_flash("/admin/nodes", "err", "Нода не найдена")
 
-    previous = node.tier
-    node.tier = NodeTier(tier)
-    audit(db, admin, "node.tier", node.host, f"{previous.value} -> {tier}")
+    previous = node.capacity
+    node.capacity = max(1, capacity)
+    audit(db, admin, "node.capacity", node.host, f"{previous} -> {node.capacity}")
     db.commit()
 
-    note = ""
-    if previous == NodeTier.free and node.tier == NodeTier.paid:
-        note = (
-            " Шейпинг на ноде при этом не снимается сам — если она была бесплатной, "
-            "уберите tc вручную или переустановите ноду."
-        )
-    return redirect_with_flash("/admin/nodes", "ok", f"Тариф ноды {node.host} → {tier}.{note}")
+    ratio = get_settings().free_admission_ratio
+    return redirect_with_flash(
+        "/admin/nodes",
+        "ok",
+        f"Ёмкость {node.host}: {node.capacity}. Бесплатные перестают приниматься "
+        f"на {int(node.capacity * ratio)}, остальное держится для платных.",
+    )
 
 
 @router.post("/nodes/{node_id}/status")
@@ -357,7 +360,8 @@ def users_page(request: Request, db: DbSession, admin: CurrentAdmin, q: str | No
             inbound = db.get(Inbound, assignment.inbound_id)
             node = db.get(Node, inbound.node_id)
             user.node_host = node.host
-            user.node_tier = node.tier.value
+            # The tier is the inbound's: nodes serve both audiences.
+            user.node_tier = inbound.tier.value
         else:
             user.node_host = None
             user.node_tier = None

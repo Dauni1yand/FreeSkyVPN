@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db.models.node import (
     Assignment,
     Inbound,
@@ -28,13 +29,13 @@ from app.db.models.node import (
     Node,
     NodeChannelState,
     NodeStatus,
-    NodeTier,
 )
 from app.db.models.user import User
 from app.node_manager.exceptions import NodeChannelError
 from app.services import keygen
 from app.services.inbound_factory import create_inbound
 from app.services.node_sync import push_node_config
+from app.services.tiers import Tier
 from app.services.vless_link import build_vless_link
 
 logger = logging.getLogger(__name__)
@@ -60,10 +61,17 @@ def active_assignment(db: Session, user: User) -> Assignment | None:
 
 
 def eligible_nodes(
-    db: Session, exclude_node_ids: set | None = None, tier: NodeTier | None = None
+    db: Session, exclude_node_ids: set | None = None, tier: Tier | None = None
 ) -> list[Node]:
-    """Reachable, accepting nodes, least loaded first, optionally one tier only."""
+    """Reachable, accepting nodes with room for this tier, least loaded first.
+
+    Every node serves both audiences; what differs is how full a node may be
+    before each stops being admitted. Free users stop well below the ceiling
+    (`free_admission_ratio`), which is what leaves room for a paying user to
+    get in on a busy node instead of finding it full.
+    """
     exclude_node_ids = exclude_node_ids or set()
+    settings = get_settings()
 
     load_subq = (
         select(Assignment.inbound_id, func.count().label("n"))
@@ -87,14 +95,28 @@ def eligible_nodes(
     for node, load in rows:
         if node.id in exclude_node_ids:
             continue
-        if tier is not None and node.tier != tier:
-            continue
         node.load = int(load)  # keep the denormalised counter honest for admin views
+
+        if tier is not None:
+            ceiling = node.capacity
+            if tier == Tier.free:
+                ceiling = int(node.capacity * settings.free_admission_ratio)
+            if node.load >= ceiling:
+                continue
+
         nodes.append(node)
     return nodes
 
 
-def live_inbound(db: Session, node: Node, exclude_inbound_ids: set | None = None) -> Inbound | None:
+def live_inbound(
+    db: Session, node: Node, tier: Tier, exclude_inbound_ids: set | None = None
+) -> Inbound | None:
+    """A usable inbound of this tier on this node.
+
+    Tier matters here rather than at the node: the node's `tc` classes key
+    their priority off the inbound's port, so putting a paying user on a
+    free-tier inbound would quietly cost them the priority they bought.
+    """
     exclude_inbound_ids = exclude_inbound_ids or set()
     inbounds = db.scalars(
         select(Inbound)
@@ -102,40 +124,11 @@ def live_inbound(db: Session, node: Node, exclude_inbound_ids: set | None = None
             Inbound.node_id == node.id,
             Inbound.is_control_channel.is_(False),
             Inbound.state == InboundState.active,
+            Inbound.tier == tier,
         )
         .order_by(Inbound.fail_count.asc(), Inbound.created_at.asc())
     ).all()
     return next((ib for ib in inbounds if ib.id not in exclude_inbound_ids), None)
-
-
-def _nodes_for_tier(db: Session, user: User, exclude_node_ids: set | None) -> list[Node]:
-    """Candidate nodes for this user, respecting the free/paid split.
-
-    The two directions are deliberately asymmetric:
-
-      paid user, no paid node   fall back to a free node. Degraded service
-                                beats no service, and the user keeps their
-                                entitlement the moment capacity returns
-                                (tiering.reconcile_placement sweeps for it).
-      free user, no free node   refuse. Placing them on a paid node would
-                                hand out the paid product for nothing *and*
-                                eat the capacity that paying users are
-                                promised priority on.
-    """
-    # imported here: tiering imports this module for assign_config
-    from app.services.tiering import required_tier
-
-    wanted = required_tier(db, user)
-    nodes = eligible_nodes(db, exclude_node_ids=exclude_node_ids, tier=wanted)
-    if nodes or wanted == NodeTier.free:
-        return nodes
-
-    fallback = eligible_nodes(db, exclude_node_ids=exclude_node_ids, tier=NodeTier.free)
-    if fallback:
-        logger.warning(
-            "no paid-tier capacity for user %s, placing on a free node until some frees up", user.id
-        )
-    return fallback
 
 
 def assign_config(
@@ -153,10 +146,19 @@ def assign_config(
     fallback tunnel would never engage. So an attempt is undone by
     explicitly reversing the rows it added instead.
     """
+    from app.services.tiering import required_tier  # tiering imports assign_config
+
     exclude_inbound_ids = exclude_inbound_ids or set()
-    nodes = _nodes_for_tier(db, user, exclude_node_ids)
+    tier = required_tier(db, user)
+    nodes = eligible_nodes(db, exclude_node_ids=exclude_node_ids, tier=tier)
     if not nodes:
-        raise NoCapacityError("no reachable node is currently accepting users")
+        # For a free user this is the intended outcome on a busy fleet: the
+        # remaining headroom is being held for paying users, which is what
+        # "paid goes first under load" means at admission time.
+        raise NoCapacityError(
+            f"no node is currently accepting {tier.value}-tier users"
+            + (" — free capacity is held back for paying users" if tier == Tier.free else "")
+        )
 
     previous = active_assignment(db, user)
     last_error: Exception | None = None
@@ -165,9 +167,9 @@ def assign_config(
         created_inbound: Inbound | None = None
         assignment: Assignment | None = None
         try:
-            inbound = live_inbound(db, node, exclude_inbound_ids=exclude_inbound_ids)
+            inbound = live_inbound(db, node, tier, exclude_inbound_ids=exclude_inbound_ids)
             if inbound is None:
-                inbound = created_inbound = create_inbound(db, node)
+                inbound = created_inbound = create_inbound(db, node, tier)
 
             assignment = Assignment(
                 user_id=user.id,

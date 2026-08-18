@@ -16,6 +16,9 @@
     <div class="n">{{ s.subs_trial }} на триале</div></div>
   <div class="stat"><div class="k">Инбаунды</div><div class="v num">{{ s.inbounds_active }}</div>
     <div class="n">{{ s.inbounds_dead }} мёртвых</div></div>
+  <div class="stat"><div class="k">Ёмкость</div>
+    <div class="v num">{{ s.capacity_used }}/{{ s.capacity_total }}</div>
+    <div class="n">занято на активных нодах</div></div>
   <div class="stat"><div class="k">Очередь доставки</div><div class="v num">{{ s.pushes_pending }}</div>
     <div class="n">неотправленных конфигов</div></div>
 </div>
@@ -26,16 +29,11 @@
   Пользователи на них продолжают работать, но новые конфиги туда не уходят.
 </div>
 {% endif %}
-{% if s.nodes_total and not s.nodes_paid %}
+{% if s.capacity_total and s.capacity_used >= s.capacity_total * 0.8 %}
 <div class="flash warn">
-  Нет ни одной платной ноды. Платящие пользователи размещаются на бесплатных
-  (шейпленных) нодах — это работает, но приоритет и полная скорость им не достаются.
-</div>
-{% endif %}
-{% if s.nodes_total and not s.nodes_free %}
-<div class="flash warn">
-  Нет ни одной бесплатной ноды. Бесплатные пользователи не смогут подключиться:
-  на платные ноды они намеренно не допускаются.
+  Ёмкость почти исчерпана ({{ s.capacity_used }} из {{ s.capacity_total }}).
+  Бесплатные пользователи уже перестают приниматься — остаток держится для платных.
+  Пора добавить ноду.
 </div>
 {% endif %}
 
@@ -44,15 +42,14 @@
     <h3 style="margin-top:0;font-size:15px">Ноды</h3>
     {% if nodes %}
     <div class="wrap"><table>
-      <tr><th>Хост</th><th>Страна</th><th>Тариф</th><th>Канал</th><th class="num">Юзеров</th></tr>
+      <tr><th>Хост</th><th>Страна</th><th>Канал</th><th class="num">Загрузка</th></tr>
       {% for n in nodes %}
       <tr>
         <td class="mono">{{ n.host }}</td>
         <td>{{ n.country }}</td>
-        <td><span class="pill {{ 'ok' if n.tier.value=='paid' else 'dim' }}">{{ n.tier.value }}</span></td>
         <td><span class="pill {{ {'active':'ok','degraded':'warn','isolated':'bad'}[n.channel_state.value] }}">
           {{ n.channel_state.value }}</span></td>
-        <td class="num">{{ n.load }}</td>
+        <td class="num">{{ n.load }}/{{ n.capacity }}</td>
       </tr>
       {% endfor %}
     </table></div>

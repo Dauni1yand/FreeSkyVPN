@@ -27,6 +27,14 @@ import sys
 from pathlib import Path
 
 BOOTSTRAP_SCRIPT = Path(__file__).parent / "bootstrap_node.sh"
+
+
+def _tier_arguments() -> dict:
+    """Port sets per tier, read from the head so there is one source of truth."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "head"))
+    from app.services.tiers import bootstrap_arguments
+
+    return bootstrap_arguments()
 REMOTE_CERT_PATH = "/root/freeskyvpn_head_client_cert.pem"
 
 
@@ -37,8 +45,11 @@ def run_bootstrap(
     control_port: int,
     sni: str,
     reality_port: int,
-    tier: str,
-    shaped_mbit: int,
+    uplink_mbit: int,
+    paid_ports: str,
+    free_ports: str,
+    paid_range: str,
+    free_range: str,
 ) -> dict:
     print(f"[provision] copying head client cert to {host}", file=sys.stderr)
     subprocess.run(
@@ -57,8 +68,11 @@ def run_bootstrap(
             str(control_port),
             sni,
             str(reality_port),
-            tier,
-            str(shaped_mbit),
+            str(uplink_mbit),
+            paid_ports,
+            free_ports,
+            paid_range,
+            free_range,
         ],
         input=BOOTSTRAP_SCRIPT.read_text(),
         text=True,
@@ -92,19 +106,17 @@ def main() -> None:
     parser.add_argument("--control-sni", default="www.microsoft.com")
     parser.add_argument("--control-reality-port", type=int, default=8443)
     parser.add_argument(
-        "--tier",
-        choices=["free", "paid"],
-        default="free",
-        help="free nodes are bandwidth-shaped at provisioning time; paid nodes are not",
-    )
-    parser.add_argument(
-        "--shaped-mbit",
+        "--uplink-mbit",
         type=int,
-        default=10,
-        help="interface cap for a free node, shared by its users (ignored for paid)",
+        default=100,
+        help="link capacity to shape within; paid traffic is served first out of it",
     )
+    parser.add_argument("--capacity", type=int, default=200, help="max concurrent users")
     args = parser.parse_args()
 
+    # The port sets come from the head so the node's tc filters and the ports
+    # the head hands out cannot drift apart.
+    tier_args = _tier_arguments()
     payload = run_bootstrap(
         args.host,
         args.ssh_user,
@@ -112,14 +124,15 @@ def main() -> None:
         args.control_port,
         args.control_sni,
         args.control_reality_port,
-        args.tier,
-        args.shaped_mbit,
+        args.uplink_mbit,
+        tier_args["paid_ports"],
+        tier_args["free_ports"],
+        tier_args["paid_range"],
+        tier_args["free_range"],
     )
+    payload["capacity"] = args.capacity
     node = register_with_head(args.api_url, payload, args.country)
-    print(
-        f"[provision] registered node {node['id']} "
-        f"({node['host']}, {node['country']}, tier={node['tier']})"
-    )
+    print(f"[provision] registered node {node['id']} ({node['host']}, {node['country']})")
 
 
 if __name__ == "__main__":

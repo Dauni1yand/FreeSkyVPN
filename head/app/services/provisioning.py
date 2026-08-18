@@ -25,8 +25,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models.node import Inbound, Node, NodeStatus, NodeTier
-from app.services import crypto, ssh_manager
+from app.db.models.node import Inbound, Node, NodeStatus
+from app.services import crypto, ssh_manager, tiers
 from app.services.ssh_manager import SshError
 
 logger = logging.getLogger(__name__)
@@ -68,8 +68,8 @@ def provision_node(
     ssh_user: str,
     ssh_password: str,
     ssh_port: int = 22,
-    tier: NodeTier = NodeTier.free,
-    shaped_mbit: int = 10,
+    uplink_mbit: int = 100,
+    capacity: int = 200,
     control_port: int = 62050,
     control_sni: str = "www.microsoft.com",
     control_reality_port: int = 8443,
@@ -94,8 +94,8 @@ def provision_node(
         ssh_user=ssh_user,
         ssh_port=ssh_port,
         control_port=control_port,
-        tier=tier,
-        shaped_mbit=shaped_mbit if tier == NodeTier.free else None,
+        uplink_mbit=uplink_mbit,
+        capacity=capacity,
         # Not yet usable: it has no control-channel inbound and no pinned
         # certificate, so the selector must not hand users to it.
         status=NodeStatus.draining,
@@ -121,9 +121,13 @@ def provision_node(
                 sftp.close()
             log.append("head client certificate uploaded")
 
+            # The tier port sets come from the head so the tc filters on the
+            # node and the ports the head hands out cannot drift apart.
+            args = tiers.bootstrap_arguments()
             command = (
                 f"bash -s -- {control_port} {control_sni} {control_reality_port} "
-                f"{tier.value} {shaped_mbit}"
+                f"{uplink_mbit} {args['paid_ports']} {args['free_ports']} "
+                f"{args['paid_range']} {args['free_range']}"
             )
             result = ssh_manager.run(client, command, stdin_data=_bootstrap_source())
             if result.exit_status != 0:
@@ -135,6 +139,7 @@ def provision_node(
         payload = _parse_bootstrap_output(result.stdout)
         _apply_bootstrap_payload(db, node, payload)
         log.append(f"registered control-channel inbound on port {payload['control_inbound']['port']}")
+        log.append(f"traffic priority applied on a {uplink_mbit} Mbit/s link")
 
         node.ssh_password_enc = ssh_manager.rotate_password(node)
         node.ssh_password_rotated_at = datetime.now(UTC)

@@ -28,8 +28,11 @@ set -euo pipefail
 CONTROL_PORT="${1:-62050}"
 CONTROL_SNI="${2:-www.microsoft.com}"
 CONTROL_PORT_REALITY="${3:-8443}"
-NODE_TIER="${4:-free}"          # free | paid
-SHAPED_MBIT="${5:-10}"          # only applied when NODE_TIER=free
+UPLINK_MBIT="${4:-100}"         # link capacity to shape within
+PAID_PORTS="${5:-443,2053,2087}" # served first when the link is contended
+FREE_PORTS="${6:-8443,2083,2096}"
+PAID_RANGE="${7:-20000-39999}"   # fallback ports, same priority as PAID_PORTS
+FREE_RANGE="${8:-40000-59999}"
 HEAD_CLIENT_CERT_PATH="/root/freeskyvpn_head_client_cert.pem"
 MARZBAN_NODE_DIR="/var/lib/marzban-node"
 
@@ -80,50 +83,81 @@ if command -v ufw &>/dev/null; then
     ufw allow "$CONTROL_PORT_REALITY"/tcp || true
 fi
 
-# Speed shaping. Xray-core has no per-user bandwidth limit (the `speedLimit`
-# policy field seen in various guides is silently ignored — measured, not
-# assumed), so the free/paid split is delivered by putting the two tiers on
-# different nodes and shaping the free ones here, once. Nothing has to run on
-# the node again afterwards, which keeps SSH to provisioning only.
+# Traffic priority. Xray-core has no per-user bandwidth control (measured,
+# not assumed: the `speedLimit` policy field is silently ignored, and
+# `sendThrough` has no effect), so the only handle on a user's traffic that
+# the node can act on is the port they connect to. Each tier owns a fixed set
+# of ports — passed in from the head so the two cannot drift — and tc gives
+# those sets different priority.
 #
-# This is an interface-wide cap with fair queueing between flows, not a
-# guaranteed per-user rate: free users on the node share `SHAPED_MBIT`, and
-# fq_codel keeps one heavy user from starving the rest. That is the honest
-# description of what this delivers.
-if [[ "$NODE_TIER" == "free" ]]; then
-    IFACE="$(ip route show default | awk '/default/ {print $5; exit}')"
-    if [[ -z "$IFACE" ]]; then
-        echo "could not determine the default interface; skipping shaping" >&2
-    else
-        log "shaping $IFACE to ${SHAPED_MBIT}mbit (free tier)"
-        tc qdisc del dev "$IFACE" root 2>/dev/null || true
-        tc qdisc add dev "$IFACE" root handle 1: htb default 10
-        tc class add dev "$IFACE" parent 1: classid 1:10 \
-            htb rate "${SHAPED_MBIT}mbit" ceil "${SHAPED_MBIT}mbit"
-        tc qdisc add dev "$IFACE" parent 1:10 handle 10: fq_codel
-        # tc is not persistent across reboots; re-apply on boot.
-        cat > /etc/systemd/system/freeskyvpn-shaping.service <<UNIT
+# Both classes may burst to the full link, so nothing is wasted when only one
+# tier is active. The difference appears exactly when the link is contended:
+# htb serves the higher-priority class first, so paying users get the
+# bandwidth and free users get what is left.
+#
+# Written as a standalone script and then executed, rather than run inline
+# and duplicated into a unit file: one copy of the rules means the boot-time
+# state cannot drift from what was applied now.
+IFACE="$(ip route show default | awk '/default/ {print $5; exit}')"
+if [[ -z "$IFACE" ]]; then
+    echo "could not determine the default interface; skipping traffic priority" >&2
+else
+    log "shaping $IFACE at ${UPLINK_MBIT}mbit, paid traffic served first"
+    PAID_RATE=$((UPLINK_MBIT * 70 / 100))
+    FREE_RATE=$((UPLINK_MBIT - PAID_RATE))
+
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -e'
+        echo "IFACE=$IFACE"
+        echo 'tc qdisc del dev "$IFACE" root 2>/dev/null || true'
+        echo 'tc qdisc add dev "$IFACE" root handle 1: htb default 20'
+        echo "tc class add dev \"\$IFACE\" parent 1: classid 1:1 htb rate ${UPLINK_MBIT}mbit ceil ${UPLINK_MBIT}mbit"
+        # Guaranteed shares differ; both ceil at the full link, so the split
+        # only bites while the two tiers actually compete.
+        echo "tc class add dev \"\$IFACE\" parent 1:1 classid 1:10 htb rate ${PAID_RATE}mbit ceil ${UPLINK_MBIT}mbit prio 0"
+        echo "tc class add dev \"\$IFACE\" parent 1:1 classid 1:20 htb rate ${FREE_RATE}mbit ceil ${UPLINK_MBIT}mbit prio 1"
+        # fq_codel inside each class keeps one heavy user from starving peers
+        # in the same tier.
+        echo 'tc qdisc add dev "$IFACE" parent 1:10 handle 10: fq_codel'
+        echo 'tc qdisc add dev "$IFACE" parent 1:20 handle 20: fq_codel'
+
+        # Match on source port: for traffic leaving the node towards a client,
+        # the source port is the inbound the client connected to.
+        for port in ${PAID_PORTS//,/ }; do
+            echo "tc filter add dev \"\$IFACE\" parent 1: protocol ip prio 1 u32 match ip sport $port 0xffff flowid 1:10"
+        done
+        for port in ${FREE_PORTS//,/ }; do
+            echo "tc filter add dev \"\$IFACE\" parent 1: protocol ip prio 2 u32 match ip sport $port 0xffff flowid 1:20"
+        done
+
+        # Fallback ranges, used once a tier's preferred ports are all taken.
+        # cls_basic is not present on every kernel, so a failure here is a
+        # warning rather than fatal: the preferred ports still get priority.
+        echo "tc filter add dev \"\$IFACE\" parent 1: protocol ip prio 3 basic match \"cmp(u16 at 0 layer transport gt $(( ${PAID_RANGE%-*} - 1 )))\" and \"cmp(u16 at 0 layer transport lt $(( ${PAID_RANGE#*-} + 1 )))\" flowid 1:10 2>/dev/null || echo 'note: cls_basic missing, paid fallback ports unprioritised' >&2"
+        echo "tc filter add dev \"\$IFACE\" parent 1: protocol ip prio 3 basic match \"cmp(u16 at 0 layer transport gt $(( ${FREE_RANGE%-*} - 1 )))\" and \"cmp(u16 at 0 layer transport lt $(( ${FREE_RANGE#*-} + 1 )))\" flowid 1:20 2>/dev/null || true"
+    } > /usr/local/sbin/freeskyvpn-shaping.sh
+
+    chmod +x /usr/local/sbin/freeskyvpn-shaping.sh
+    /usr/local/sbin/freeskyvpn-shaping.sh || echo "shaping failed to apply; check 'tc -s qdisc'" >&2
+
+    # tc state is lost on reboot; re-apply from the same script.
+    cat > /etc/systemd/system/freeskyvpn-shaping.service <<UNIT
 [Unit]
-Description=FreeSkyVPN free-tier traffic shaping
+Description=FreeSkyVPN traffic priority (paid served before free)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c 'tc qdisc del dev $IFACE root 2>/dev/null; \\
-  tc qdisc add dev $IFACE root handle 1: htb default 10 && \\
-  tc class add dev $IFACE parent 1: classid 1:10 htb rate ${SHAPED_MBIT}mbit ceil ${SHAPED_MBIT}mbit && \\
-  tc qdisc add dev $IFACE parent 1:10 handle 10: fq_codel'
+ExecStart=/usr/local/sbin/freeskyvpn-shaping.sh
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-        systemctl daemon-reload && systemctl enable --now freeskyvpn-shaping.service || \
-            echo "could not install the shaping unit; shaping will not survive a reboot" >&2
-    fi
-else
-    log "paid tier: leaving bandwidth unshaped"
+    systemctl daemon-reload && systemctl enable freeskyvpn-shaping.service || \
+        echo "could not install the shaping unit; priority will not survive a reboot" >&2
 fi
 
 # marzban-node writes its self-signed cert on first start. The head pins this
@@ -145,5 +179,5 @@ NODE_HOST="$(curl -fsS https://api.ipify.org || hostname -I | awk '{print $1}')"
 
 log "done — registration payload follows on stdout"
 cat <<JSON
-{"host": "$NODE_HOST", "control_port": $CONTROL_PORT, "tier": "$NODE_TIER", "shaped_mbit": $( [[ "$NODE_TIER" == "free" ]] && echo "$SHAPED_MBIT" || echo null ), "tls_cert_b64": "$TLS_CERT_B64", "control_inbound": {"port": $CONTROL_PORT_REALITY, "sni": "$CONTROL_SNI", "reality_private_key": "$PRIVATE_KEY", "reality_public_key": "$PUBLIC_KEY", "reality_short_id": "$SHORT_ID", "control_client_uuid": "$CONTROL_CLIENT_UUID"}}
+{"host": "$NODE_HOST", "control_port": $CONTROL_PORT, "uplink_mbit": $UPLINK_MBIT, "tls_cert_b64": "$TLS_CERT_B64", "control_inbound": {"port": $CONTROL_PORT_REALITY, "sni": "$CONTROL_SNI", "reality_private_key": "$PRIVATE_KEY", "reality_public_key": "$PUBLIC_KEY", "reality_short_id": "$SHORT_ID", "control_client_uuid": "$CONTROL_CLIENT_UUID"}}
 JSON

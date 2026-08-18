@@ -3,9 +3,10 @@ SNI, транспорт" part of the brief.
 
 What each dimension can actually do:
 
-  port       free choice. Preferred list first (all ordinary HTTPS ports, so
-             a Reality listener on one is unremarkable), random high port as
-             a fallback once those are taken on that node.
+  port       chosen from the set that belongs to the inbound's tier, because
+             the node's `tc` classes key their priority off exactly these
+             ports (app/services/tiers.py). Preferred list first — all
+             ordinary HTTPS ports — then the tier's fallback range.
   SNI        free choice from the curated `sni_candidates` pool, biased away
              from domains that were on recently-killed inbounds.
   transport  constrained — see services/transports.py. Reality permits only
@@ -26,7 +27,8 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db.models.node import Inbound, InboundState, Node, SniCandidate, SniProbe
-from app.services import keygen
+from app.services import keygen, tiers
+from app.services.tiers import Tier
 from app.services.timeutil import as_aware
 from app.services.transports import DEFAULT_TRANSPORT, TransportSpec
 
@@ -35,7 +37,7 @@ class NoSniAvailableError(RuntimeError):
     """The sni_candidates pool is empty or fully disabled — an ops problem, not a user-facing one."""
 
 
-def pick_port(db: Session, node: Node) -> int:
+def pick_port(db: Session, node: Node, tier: Tier = Tier.free) -> int:
     """Choose a port for a new inbound on this node.
 
     Ports are recycled. A dead inbound is dropped from the node's config, so
@@ -48,8 +50,14 @@ def pick_port(db: Session, node: Node) -> int:
     blocked, since that would reproduce the block immediately. So a port
     stays deprioritised while its death is still inside the fail window, and
     becomes an ordinary candidate again afterwards.
+
+    The candidate set is the tier's, never the whole port space: a paid user
+    on a port `tc` classes as free would silently lose the priority they are
+    paying for.
     """
     settings = get_settings()
+    preferred = tiers.ports_for(tier)
+    low, high = tiers.fallback_range_for(tier)
     rows = db.execute(
         select(Inbound.port, Inbound.state, Inbound.died_at).where(Inbound.node_id == node.id)
     ).all()
@@ -64,11 +72,10 @@ def pick_port(db: Session, node: Node) -> int:
         if state == InboundState.dead and (as_aware(died_at) or cutoff) >= cutoff
     }
 
-    for port in settings.preferred_ports:
+    for port in preferred:
         if port not in live_ports and port not in recently_burned:
             return port
 
-    low, high = settings.fallback_port_range
     # A node with tens of thousands of inbounds is not a scenario worth
     # coding around; a bounded number of attempts then a linear scan is
     # simpler and cannot loop forever.
@@ -82,10 +89,10 @@ def pick_port(db: Session, node: Node) -> int:
 
     # Last resort: a preferred port that was burned very recently still beats
     # having no inbound to hand the user at all.
-    for port in settings.preferred_ports:
+    for port in preferred:
         if port not in live_ports:
             return port
-    raise RuntimeError(f"no free port left on node {node.id}")
+    raise RuntimeError(f"no free {tier.value}-tier port left on node {node.id}")
 
 
 def pick_sni(db: Session, node: Node, exclude: set[str] | None = None) -> SniCandidate:
@@ -147,6 +154,7 @@ def pick_sni(db: Session, node: Node, exclude: set[str] | None = None) -> SniCan
 def create_inbound(
     db: Session,
     node: Node,
+    tier: Tier = Tier.free,
     transport: TransportSpec = DEFAULT_TRANSPORT,
     exclude_snis: set[str] | None = None,
 ) -> Inbound:
@@ -155,7 +163,8 @@ def create_inbound(
 
     inbound = Inbound(
         node_id=node.id,
-        port=pick_port(db, node),
+        tier=tier,
+        port=pick_port(db, node, tier),
         sni=sni.domain,
         transport=transport.code,
         reality_private_key=keypair.private_key,

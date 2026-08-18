@@ -18,26 +18,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
+# Tier lives on the inbound rather than the node: every node serves both
+# audiences, and `tc` on the node tells them apart by port.
+from app.services.tiers import Tier
+
 
 class NodeStatus(str, enum.Enum):
     active = "active"
     draining = "draining"
-
-
-class NodeTier(str, enum.Enum):
-    """Which audience a node serves.
-
-    Xray-core has no per-user bandwidth limit (verified by measurement — the
-    `speedLimit` policy field found in various guides is silently ignored,
-    behaving exactly like a field that does not exist). Separating the tiers
-    onto different nodes is therefore how "free is slower, paid gets priority
-    and full speed" is delivered: a free node is shaped once with `tc` at
-    provisioning time, a paid node is not, and no per-user classification or
-    runtime execution on the node is needed for either.
-    """
-
-    free = "free"
-    paid = "paid"
 
 
 class NodeChannelState(str, enum.Enum):
@@ -74,11 +62,14 @@ class Node(Base):
     ssh_private_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     ssh_password_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    tier: Mapped[NodeTier] = mapped_column(Enum(NodeTier, name="node_tier"), default=NodeTier.free)
-    # The rate `tc` was configured with at provisioning time, recorded so the
-    # head can report what a free user actually gets. Null on paid nodes,
-    # which are left unshaped.
-    shaped_mbit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Link capacity `tc` was configured with, in Mbit/s. Paid traffic is
+    # served first out of it when the link is contended; free traffic uses
+    # what is left and still bursts to the full link when nothing competes.
+    uplink_mbit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Soft ceiling on concurrent users. Free users stop being admitted well
+    # before it (see config_selector), which is what keeps room for paying
+    # ones on a busy node.
+    capacity: Mapped[int] = mapped_column(Integer, default=200)
 
     # marzban-node generates its own self-signed cert on first boot; the head
     # captures it during provisioning and pins it as the only cert it will
@@ -118,6 +109,10 @@ class Inbound(Base):
     port: Mapped[int] = mapped_column(Integer)
     sni: Mapped[str] = mapped_column(String(255))
     transport: Mapped[str] = mapped_column(String(32), default="reality-vision")
+    # Which audience this inbound serves. The node's `tc` rules key their
+    # priority classes off this inbound's port, so the two must agree —
+    # app/services/tiers.py owns the mapping.
+    tier: Mapped[Tier] = mapped_column(Enum(Tier, name="inbound_tier"), default=Tier.free)
 
     # reality_private_key is sensitive: it must be embedded in every full
     # config push (marzban-node has no "add one user" call — see

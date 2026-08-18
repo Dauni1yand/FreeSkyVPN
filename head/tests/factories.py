@@ -6,8 +6,9 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from app.db.models.node import Assignment, Inbound, Node, NodeTier, SniCandidate
+from app.db.models.node import Assignment, Inbound, Node, SniCandidate
 from app.db.models.user import User
+from app.services.tiers import Tier
 
 
 def make_user(db: Session) -> User:
@@ -21,7 +22,6 @@ def make_node(db: Session, country: str = "nl", **kwargs) -> Node:
     node = Node(
         host=kwargs.pop("host", f"203.0.113.{len(db.query(Node).all()) + 10}"),
         country=country,
-        tier=kwargs.pop("tier", NodeTier.free),
         tls_cert_pem=kwargs.pop("tls_cert_pem", "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----"),
         **kwargs,
     )
@@ -36,6 +36,7 @@ def make_inbound(db: Session, node: Node, **kwargs) -> Inbound:
         port=kwargs.pop("port", 443),
         sni=kwargs.pop("sni", "www.samsung.com"),
         transport=kwargs.pop("transport", "reality-vision"),
+        tier=kwargs.pop("tier", Tier.free),
         reality_private_key=kwargs.pop("reality_private_key", "priv"),
         reality_public_key=kwargs.pop("reality_public_key", "pub"),
         reality_short_id=kwargs.pop("reality_short_id", "ab12ab12"),

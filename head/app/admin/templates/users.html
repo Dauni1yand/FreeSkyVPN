@@ -33,7 +33,7 @@
       </td>
       <td class="mono" style="font-size:12.5px">
         {% if u.node_host %}{{ u.node_host }}
-          <div style="color:var(--muted)">{{ u.node_tier }}</div>
+          <div style="color:var(--muted)">инбаунд: {{ u.node_tier }}</div>
         {% else %}<span style="color:var(--muted)">не подключён</span>{% endif %}
       </td>
       <td><span class="pill {{ 'bad' if u.status.value=='banned' else 'ok' }}">{{ u.status.value }}</span></td>
