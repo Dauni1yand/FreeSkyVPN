@@ -10,6 +10,7 @@ from app.admin.router import router as admin_router
 from app.api.routers import (
     connect,
     health,
+    me,
     nodes,
     pushes,
     sni,
@@ -63,6 +64,7 @@ app = FastAPI(title="FreeSkyVPN Head", lifespan=lifespan)
 # every other router requires the service token (see app/api/auth.py).
 app.include_router(health.router)
 app.include_router(users.router)
+app.include_router(me.router)
 app.include_router(nodes.router)
 app.include_router(connect.router)
 app.include_router(subscriptions.router)

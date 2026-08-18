@@ -11,6 +11,9 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""
     telegram_admin_chat_id: str = ""
+    # Only used to tell the app whether to show the buy button; the
+    # payment flow itself lives in the bot.
+    payment_provider_token: str = ""
 
     # control-channel resilience thresholds (see app/node_manager/channel.py)
     node_channel_primary_timeout_s: float = 3.0
@@ -100,6 +103,18 @@ class Settings(BaseSettings):
     xray_update_retry_hours: int = 24
     # Master switch for update detection. Leave on; approval is still manual.
     xray_update_check_enabled: bool = True
+
+    # --- Android client (phase 5) ---
+    # A code typed from one screen into a chat. Short because a human types
+    # it; short-lived because six digits would otherwise be guessable.
+    link_code_length: int = 6
+    link_code_ttl_minutes: int = 10
+    # Version of the split-tunnel policy served to apps. Bumping it makes
+    # every client refetch (app/services/routing_policy.py).
+    routing_policy_version: int = 1
+    # Shown in the app's link screen ("напишите @<бот> код 123456"). Cosmetic;
+    # empty just means the app names no bot.
+    telegram_bot_username: str = ""
 
     # --- tiering (phase 4) ---
     tier_reconcile_interval_minutes: int = 30

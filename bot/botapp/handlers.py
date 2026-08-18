@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     LabeledPrice,
@@ -38,6 +38,30 @@ async def on_start(message: Message, api: HeadApi) -> None:
     # the Android app later attaches to this same account (blueprint §05).
     await _user_id(api, message.from_user.id)
     await message.answer(texts.WELCOME, reply_markup=keyboards.main_menu())
+
+
+@router.message(Command("link"))
+async def on_link(message: Message, command: CommandObject, api: HeadApi) -> None:
+    """Attach the Android app's anonymous account to this Telegram account.
+
+    The app registers anonymously so nobody has to fill in a form before
+    their first connection. That trade costs account recovery, and this is
+    where it is bought back.
+    """
+    code = (command.args or "").strip()
+    if not code:
+        await message.answer(texts.LINK_USAGE)
+        return
+
+    try:
+        await api.redeem_link_code(code, message.from_user.id)
+    except HeadApiError as exc:
+        # 400 carries a reason meant for the user; anything else does not.
+        reason = exc.detail if exc.status_code == 400 else "попробуйте ещё раз через минуту"
+        await message.answer(texts.link_failed(reason))
+        return
+
+    await message.answer(texts.LINK_OK, reply_markup=keyboards.main_menu())
 
 
 @router.callback_query(F.data == keyboards.CB_MENU)

@@ -273,3 +273,17 @@ class HeadApi:
             {"target_version": target_version, "approve": approve, "by": by},
         )
         return int(data["changed"])
+
+    # --- linking the Android app to this Telegram account ---------------
+    async def redeem_link_code(self, code: str, telegram_id: int) -> str:
+        """Attach this Telegram account to the app account that showed `code`.
+
+        The bot is the only caller that legitimately has a Telegram id: it
+        saw the message arrive from it. The app cannot prove one about
+        itself, which is why redemption lives here and not there.
+        """
+        data = await self._post(
+            "/api/v1/auth/link/redeem",
+            {"code": code, "telegram_id": str(telegram_id)},
+        )
+        return data["user_id"]
