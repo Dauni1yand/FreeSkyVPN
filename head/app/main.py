@@ -7,18 +7,36 @@ from fastapi.responses import RedirectResponse
 
 from app.admin.deps import NotLoggedIn
 from app.admin.router import router as admin_router
-from app.api.routers import connect, health, nodes, pushes, sni, subscriptions, users
+from app.api.routers import (
+    connect,
+    health,
+    nodes,
+    pushes,
+    sni,
+    subscriptions,
+    users,
+    xray_updates,
+)
 from app.config import get_settings
-from app.services.scheduler import sni_maintenance_loop, tier_reconciliation_loop
+from app.services.scheduler import (
+    sni_maintenance_loop,
+    tier_reconciliation_loop,
+    xray_update_apply_loop,
+    xray_update_check_loop,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Background upkeep: SNI pool freshness and free/paid placement.
+    """Background upkeep: SNI freshness, free/paid placement, Xray updates.
 
-    Both live in app/services/scheduler.py.
+    All of them live in app/services/scheduler.py.
+
+    The apply loop starts even when update checking is switched off: it
+    exists to act on approvals, and approvals can still arrive from the
+    admin panel for proposals raised earlier.
     """
     tasks = []
     settings = get_settings()
@@ -28,6 +46,10 @@ async def lifespan(_app: FastAPI):
             logger.info("SNI maintenance loop started")
         tasks.append(asyncio.create_task(tier_reconciliation_loop()))
         logger.info("tier reconciliation loop started")
+        if settings.xray_update_check_enabled:
+            tasks.append(asyncio.create_task(xray_update_check_loop()))
+            logger.info("Xray update check loop started")
+        tasks.append(asyncio.create_task(xray_update_apply_loop()))
     try:
         yield
     finally:
@@ -46,6 +68,7 @@ app.include_router(connect.router)
 app.include_router(subscriptions.router)
 app.include_router(pushes.router)
 app.include_router(sni.router)
+app.include_router(xray_updates.router)
 app.include_router(admin_router)
 
 

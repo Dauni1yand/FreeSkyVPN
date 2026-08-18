@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Обновления Xray{% endblock %}
+{% block content %}
+<h2>Обновления Xray</h2>
+<p class="sub">Голова сама следит за релизами, но ничего не ставит без подтверждения.</p>
+
+<div class="card">
+  <div class="row">
+    <form method="post" action="/admin/updates/check">
+      <button>Проверить сейчас</button>
+    </form>
+    <span style="font-size:13px;color:var(--muted)">
+      {% if latest %}Последний релиз Xray-core: <b class="mono">{{ latest }}</b>
+      {% else %}Список релизов сейчас недоступен — GitHub не отвечает с этого сервера.{% endif %}
+    </span>
+  </div>
+  <p style="font-size:13px;color:var(--muted);margin:12px 0 0">
+    Обновление пересоздаёт контейнер на ноде, поэтому все активные подключения
+    на ней обрываются. Клиенты переподключаются сами, но момент выбираете вы —
+    отсюда или из бота. Ноды обновляются по одной, а не все разом.
+  </p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;font-size:15px">Версии на нодах</h3>
+  {% if nodes %}
+  <div class="wrap"><table>
+    <tr><th>Нода</th><th>Страна</th><th>Xray</th><th>Состояние канала</th></tr>
+    {% for n in nodes %}
+    <tr>
+      <td class="mono">{{ n.host }}</td>
+      <td>{{ n.country }}</td>
+      <td class="mono">
+        {% set v = node_versions.get(n.id) %}
+        {% if v %}{{ v }}
+          {% if latest and v != latest %}<span class="pill warn" style="margin-left:6px">есть новее</span>{% endif %}
+        {% else %}<span style="color:var(--muted)">неизвестна</span>{% endif %}
+      </td>
+      <td><span class="pill {{ 'ok' if n.channel_state.value == 'active' else ('warn' if n.channel_state.value == 'degraded' else 'bad') }}">{{ n.channel_state.value }}</span></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0">
+    Версия берётся из последней проверки, а не спрашивается у нод при открытии
+    страницы — иначе она грузилась бы тем дольше, чем больше флот.
+  </p>
+  {% else %}
+  <p class="empty">Нод пока нет.</p>
+  {% endif %}
+</div>
+
+{% if pending %}
+<div class="card">
+  <h3 style="margin-top:0;font-size:15px">Ждут подтверждения</h3>
+  {% set versions = pending | map(attribute='target_version') | unique | list %}
+  {% for version in versions %}
+    {% set group = pending | selectattr('target_version', 'equalto', version) | list %}
+    <div style="margin-bottom:14px">
+      <div class="row" style="margin-bottom:8px">
+        <b class="mono">Xray {{ version }}</b>
+        <span style="color:var(--muted);font-size:13px">нод: {{ group | length }}</span>
+        {% if group | length > 1 %}
+        <form method="post" action="/admin/updates/approve-all">
+          <input type="hidden" name="target_version" value="{{ version }}">
+          <button style="padding:5px 11px;font-size:13px">Обновить все ({{ group | length }})</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="wrap"><table>
+        <tr><th>Нода</th><th>Сейчас</th><th>Станет</th><th>Обнаружено</th><th></th></tr>
+        {% for u in group %}
+        <tr>
+          <td class="mono">{{ u.host }} <span style="color:var(--muted)">{{ u.country }}</span></td>
+          <td class="mono">{{ u.version_before or '—' }}</td>
+          <td class="mono">{{ u.target_version }}</td>
+          <td style="font-size:13px;color:var(--muted)">{{ u.created_at.strftime('%d.%m %H:%M') }}</td>
+          <td>
+            <div class="row">
+              <form method="post" action="/admin/updates/{{ u.id }}/decide">
+                <input type="hidden" name="approve" value="1">
+                <button style="padding:5px 11px;font-size:13px">Обновить</button>
+              </form>
+              <form method="post" action="/admin/updates/{{ u.id }}/decide">
+                <input type="hidden" name="approve" value="0">
+                <button class="ghost" style="padding:5px 11px;font-size:13px">Отклонить</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </table></div>
+    </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h3 style="margin-top:0;font-size:15px">История</h3>
+  {% if history %}
+  <div class="wrap"><table>
+    <tr><th>Нода</th><th>Версия</th><th>Статус</th><th>Кто решил</th><th>Когда</th><th>Примечание</th></tr>
+    {% for u in history %}
+    <tr>
+      <td class="mono">{{ u.host }}</td>
+      <td class="mono">
+        {{ u.version_before or '?' }} → {{ u.version_after or u.target_version }}
+      </td>
+      <td>
+        {% if u.status.value == 'applied' %}<span class="pill ok">обновлена</span>
+        {% elif u.status.value == 'failed' %}<span class="pill bad">ошибка</span>
+        {% elif u.status.value == 'declined' %}<span class="pill dim">отклонено</span>
+        {% elif u.status.value == 'applying' %}<span class="pill warn">ставится</span>
+        {% else %}<span class="pill warn">в очереди</span>{% endif %}
+      </td>
+      <td style="font-size:13px">{{ u.decided_by or '—' }}</td>
+      <td style="font-size:13px;color:var(--muted)">
+        {{ (u.finished_at or u.decided_at or u.created_at).strftime('%d.%m %H:%M') }}
+      </td>
+      <td style="font-size:12.5px;color:var(--muted)">{{ u.error or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}
+  <p class="empty">Пока ничего не обновлялось.</p>
+  {% endif %}
+</div>
+{% endblock %}

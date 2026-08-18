@@ -18,6 +18,7 @@ from botapp.api_client import HeadApi
 from botapp.config import get_settings
 from botapp.handlers import router
 from botapp.outbox import run_outbox_worker
+from botapp.updates import run_updates_worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -40,12 +41,16 @@ async def main() -> None:
     dispatcher.include_router(router)
     dispatcher["api"] = api
 
-    worker = asyncio.create_task(run_outbox_worker(bot, api))
+    workers = [
+        asyncio.create_task(run_outbox_worker(bot, api)),
+        asyncio.create_task(run_updates_worker(bot, api)),
+    ]
     try:
         logger.info("starting polling")
         await dispatcher.start_polling(bot)
     finally:
-        worker.cancel()
+        for worker in workers:
+            worker.cancel()
         await api.aclose()
         await bot.session.close()
 

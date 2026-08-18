@@ -64,18 +64,29 @@ log "provisioning marzban-node ($MARZBAN_NODE_DIR)"
 mkdir -p "$MARZBAN_NODE_DIR"
 cp "$HEAD_CLIENT_CERT_PATH" "$MARZBAN_NODE_DIR/ssl_client_cert.pem"
 
-docker rm -f marzban-node &>/dev/null || true
-docker run -d \
-    --name marzban-node \
-    --restart always \
-    --network host \
-    -e SSL_CERT_FILE="$MARZBAN_NODE_DIR/ssl_cert.pem" \
-    -e SSL_KEY_FILE="$MARZBAN_NODE_DIR/ssl_key.pem" \
-    -e SSL_CLIENT_CERT_FILE="$MARZBAN_NODE_DIR/ssl_client_cert.pem" \
-    -e SERVICE_PROTOCOL="rest" \
-    -e SERVICE_PORT="$CONTROL_PORT" \
-    -v "$MARZBAN_NODE_DIR:$MARZBAN_NODE_DIR" \
+# The container's launch parameters are written to a script on the node rather
+# than run inline, because updating Xray later means recreating this container
+# with exactly these settings (see provisioning/update_node.sh). Keeping one
+# copy on the node removes the chance of an update quietly recreating it with
+# different flags.
+cat > /usr/local/sbin/freeskyvpn-start-node.sh <<SCRIPT
+#!/usr/bin/env bash
+set -e
+docker rm -f marzban-node >/dev/null 2>&1 || true
+docker run -d \\
+    --name marzban-node \\
+    --restart always \\
+    --network host \\
+    -e SSL_CERT_FILE="$MARZBAN_NODE_DIR/ssl_cert.pem" \\
+    -e SSL_KEY_FILE="$MARZBAN_NODE_DIR/ssl_key.pem" \\
+    -e SSL_CLIENT_CERT_FILE="$MARZBAN_NODE_DIR/ssl_client_cert.pem" \\
+    -e SERVICE_PROTOCOL="rest" \\
+    -e SERVICE_PORT="$CONTROL_PORT" \\
+    -v "$MARZBAN_NODE_DIR:$MARZBAN_NODE_DIR" \\
     gozargah/marzban-node:latest
+SCRIPT
+chmod +x /usr/local/sbin/freeskyvpn-start-node.sh
+/usr/local/sbin/freeskyvpn-start-node.sh
 
 log "opening firewall for control + control-channel Reality ports"
 if command -v ufw &>/dev/null; then

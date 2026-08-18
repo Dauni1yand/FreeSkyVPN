@@ -64,6 +64,40 @@ class PendingPush:
     vless_url: str | None
 
 
+@dataclass(frozen=True)
+class UpdateNode:
+    update_id: str
+    host: str
+    country: str
+    version_before: str | None
+
+
+@dataclass(frozen=True)
+class UpdateGroup:
+    """One Xray version, and every node that could move to it.
+
+    Grouped by the head rather than by the bot: approving a fleet-wide
+    release should be one tap, and which rows belong together is the head's
+    knowledge, not the bot's.
+    """
+
+    target_version: str
+    update_ids: list[str]
+    nodes: list[UpdateNode]
+
+
+@dataclass(frozen=True)
+class UpdateResult:
+    update_id: str
+    host: str
+    country: str
+    target_version: str
+    version_before: str | None
+    version_after: str | None
+    status: str
+    error: str | None
+
+
 class HeadApi:
     def __init__(self, client: httpx.AsyncClient | None = None):
         settings = get_settings()
@@ -184,3 +218,58 @@ class HeadApi:
 
     async def ack_push(self, push_id: str, error: str | None = None) -> None:
         await self._post("/api/v1/pushes/ack", {"push_id": push_id, "error": error})
+
+    # --- Xray updates ---------------------------------------------------
+    async def pending_update_groups(self) -> list[UpdateGroup]:
+        rows = await self._get("/api/v1/xray-updates/notifications")
+        return [
+            UpdateGroup(
+                target_version=r["target_version"],
+                update_ids=[str(i) for i in r["update_ids"]],
+                nodes=[
+                    UpdateNode(
+                        update_id=str(n["update_id"]),
+                        host=n["host"],
+                        country=n["country"],
+                        version_before=n["version_before"],
+                    )
+                    for n in r["nodes"]
+                ],
+            )
+            for r in rows
+        ]
+
+    async def ack_update_notifications(self, update_ids: list[str]) -> None:
+        await self._post("/api/v1/xray-updates/notifications/ack", {"update_ids": update_ids})
+
+    async def update_results(self) -> list[UpdateResult]:
+        rows = await self._get("/api/v1/xray-updates/results")
+        return [
+            UpdateResult(
+                update_id=str(r["update_id"]),
+                host=r["host"],
+                country=r["country"],
+                target_version=r["target_version"],
+                version_before=r["version_before"],
+                version_after=r["version_after"],
+                status=r["status"],
+                error=r["error"],
+            )
+            for r in rows
+        ]
+
+    async def ack_update_results(self, update_ids: list[str]) -> None:
+        await self._post("/api/v1/xray-updates/results/ack", {"update_ids": update_ids})
+
+    async def decide_update_version(self, target_version: str, *, approve: bool, by: str) -> int:
+        """Answer for every node still waiting on this Xray version.
+
+        By version rather than by row id because that is all a Telegram
+        callback can carry, and because the operator was asked about a
+        release rather than about a list of rows.
+        """
+        data = await self._post(
+            "/api/v1/xray-updates/decide",
+            {"target_version": target_version, "approve": approve, "by": by},
+        )
+        return int(data["changed"])

@@ -131,7 +131,17 @@ def test_a_forged_session_cookie_is_not_accepted(client):
 
 
 @pytest.mark.parametrize(
-    "path", ["/admin", "/admin/nodes", "/admin/users", "/admin/plans", "/admin/sni", "/admin/events", "/admin/audit"]
+    "path",
+    [
+        "/admin",
+        "/admin/nodes",
+        "/admin/users",
+        "/admin/plans",
+        "/admin/sni",
+        "/admin/updates",
+        "/admin/events",
+        "/admin/audit",
+    ],
 )
 def test_every_page_renders_when_empty(auth, path):
     """An empty install must not 500 — this is the first thing an operator sees."""
@@ -140,7 +150,16 @@ def test_every_page_renders_when_empty(auth, path):
 
 
 @pytest.mark.parametrize(
-    "path", ["/admin", "/admin/nodes", "/admin/users", "/admin/plans", "/admin/sni", "/admin/events"]
+    "path",
+    [
+        "/admin",
+        "/admin/nodes",
+        "/admin/users",
+        "/admin/plans",
+        "/admin/sni",
+        "/admin/updates",
+        "/admin/events",
+    ],
 )
 def test_every_page_renders_with_data(auth, db, path):
     seed_snis(db)
@@ -421,3 +440,119 @@ def test_sni_toggle(auth, db):
     auth.post(f"/admin/sni/{candidate.id}/toggle")
     db.refresh(candidate)
     assert candidate.active is False
+
+
+# --- Xray updates --------------------------------------------------------
+
+
+def _propose(db, node, version="26.3.27", **kwargs):
+    from app.db.models.update import NodeUpdate
+
+    row = NodeUpdate(
+        node_id=node.id,
+        target_version=version,
+        version_before=kwargs.pop("version_before", "26.3.20"),
+        **kwargs,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_updates_page_renders_pending_proposals_and_history(auth, db):
+    """The pending block has the most template logic on the panel — grouping,
+    per-version bulk actions, conditional buttons — so it is rendered with
+    real rows rather than only in the empty state."""
+    from app.db.models.update import NodeUpdateStatus
+
+    nl = make_node(db, country="nl")
+    de = make_node(db, country="de")
+    _propose(db, nl)
+    _propose(db, de)
+    _propose(
+        db,
+        nl,
+        version="26.3.10",
+        status=NodeUpdateStatus.applied,
+        version_after="26.3.10",
+        decided_by="admin",
+        finished_at=datetime.now(UTC),
+    )
+
+    response = auth.get("/admin/updates")
+
+    assert response.status_code == 200, response.text[:400]
+    assert "26.3.27" in response.text
+    assert "Обновить все (2)" in response.text, "a fleet-wide release should be one action"
+
+
+def test_approving_an_update_from_the_panel_queues_it(auth, db):
+    from app.db.models.update import NodeUpdate, NodeUpdateStatus
+
+    row = _propose(db, make_node(db))
+
+    auth.post(f"/admin/updates/{row.id}/decide", data={"approve": "1"})
+
+    db.expire_all()
+    assert db.get(NodeUpdate, row.id).status == NodeUpdateStatus.approved
+
+
+def test_declining_an_update_from_the_panel(auth, db):
+    from app.db.models.update import NodeUpdate, NodeUpdateStatus
+
+    row = _propose(db, make_node(db))
+
+    auth.post(f"/admin/updates/{row.id}/decide", data={"approve": "0"})
+
+    db.expire_all()
+    assert db.get(NodeUpdate, row.id).status == NodeUpdateStatus.declined
+
+
+def test_deciding_an_already_decided_update_says_so(auth, db):
+    """The same update can be approved from Telegram a second earlier. The
+    panel must report that rather than pretend it did something."""
+    row = _propose(db, make_node(db))
+    auth.post(f"/admin/updates/{row.id}/decide", data={"approve": "1"})
+
+    response = auth.post(
+        f"/admin/updates/{row.id}/decide", data={"approve": "1"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert "%D1%83%D0%B6%D0%B5" in response.headers["set-cookie"]  # "уже"
+
+
+def test_approve_all_covers_every_node_on_that_version(auth, db):
+    from app.db.models.update import NodeUpdate, NodeUpdateStatus
+
+    for country in ("nl", "de", "fi"):
+        _propose(db, make_node(db, country=country))
+
+    auth.post("/admin/updates/approve-all", data={"target_version": "26.3.27"})
+
+    db.expire_all()
+    approved = db.query(NodeUpdate).filter_by(status=NodeUpdateStatus.approved).count()
+    assert approved == 3
+
+
+def test_manual_check_reports_an_unreachable_release_feed(auth, monkeypatch):
+    """GitHub is not reliably reachable from a head in RF. That has to read
+    as a message, not as a broken panel."""
+    monkeypatch.setattr(
+        "app.services.xray_updates.latest_release_version", lambda **_kw: None
+    )
+
+    response = auth.post("/admin/updates/check", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "warn" in response.headers["set-cookie"]
+
+
+def test_updates_page_never_calls_github_while_rendering(auth, monkeypatch):
+    """A page a human is waiting on must not spend a network timeout on a
+    decoration in its corner."""
+    def boom(*_a, **_kw):
+        raise AssertionError("the updates page must not make a live release lookup")
+
+    monkeypatch.setattr("app.services.xray_updates.httpx.get", boom)
+    assert auth.get("/admin/updates").status_code == 200

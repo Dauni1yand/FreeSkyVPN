@@ -82,6 +82,25 @@ class Settings(BaseSettings):
     # container image, so it is configuration rather than a computed guess.
     bootstrap_script_path: str = ""
 
+    # --- Xray updates (app/services/xray_updates.py) ---
+    # How often the head asks the release feed and every node what they run.
+    xray_update_check_interval_hours: int = 12
+    # A release lookup is cached this long; the answer changes at most daily
+    # and GitHub rate-limits unauthenticated callers.
+    xray_release_cache_minutes: int = 60
+    # How often approved updates are applied. Short, because this is the gap
+    # between an operator tapping "обновить" and anything happening.
+    xray_update_apply_interval_seconds: int = 60
+    # Nodes updated per apply pass. Each one restarts that node's Xray, so
+    # raising this takes more of the fleet down at once.
+    xray_update_apply_batch: int = 1
+    # After a failed attempt, wait this long before proposing the same
+    # version again — otherwise a node that cannot take the update produces
+    # a notification every check.
+    xray_update_retry_hours: int = 24
+    # Master switch for update detection. Leave on; approval is still manual.
+    xray_update_check_enabled: bool = True
+
     # --- tiering (phase 4) ---
     tier_reconcile_interval_minutes: int = 30
     # Rate a free node is shaped to at provisioning time. Recorded on the node

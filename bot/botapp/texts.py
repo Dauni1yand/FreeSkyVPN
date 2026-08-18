@@ -105,3 +105,72 @@ def payment_succeeded(expires_at: str | None) -> str:
 
 def invoice_description(plan_name: str, duration_days: int) -> str:
     return f"{plan_name} — максимальная скорость, без рекламы, приоритет на серверах ({duration_days} дн.)"
+
+
+# --- Xray updates (admin only) ------------------------------------------
+#
+# Written for the one person who runs the service, not for users, so unlike
+# everything above it does name versions and hosts: the decision being asked
+# for is an operational one and needs the operational detail.
+
+NOT_ADMIN = "Эта кнопка только для администратора."
+
+UPDATE_ALREADY_DECIDED = "Это обновление уже решено — возможно, из админки."
+
+
+def update_available(target_version: str, nodes: list) -> str:
+    lines = [
+        "⬆️ <b>Вышла новая версия Xray</b>",
+        "",
+        f"Версия: <code>{target_version}</code>",
+        f"Затронуто нод: <b>{len(nodes)}</b>",
+        "",
+    ]
+    for node in nodes[:10]:
+        current = node.version_before or "неизвестно"
+        lines.append(f"• <code>{node.host}</code> ({node.country}) — сейчас {current}")
+    if len(nodes) > 10:
+        lines.append(f"… и ещё {len(nodes) - 10}")
+
+    lines += [
+        "",
+        (
+            "Обновление пересоздаёт контейнер на ноде: активные подключения на ней "
+            "оборвутся, клиенты переподключатся сами. Ноды обновляются по одной."
+        ),
+        "",
+        "Ничего не произойдёт, пока вы не нажмёте кнопку.",
+    ]
+    return "\n".join(lines)
+
+
+def update_queued(target_version: str, count: int) -> str:
+    return (
+        f"✅ Обновление до <code>{target_version}</code> подтверждено для {count} нод(ы).\n"
+        "Ставится по одной, о результате сообщу здесь же."
+    )
+
+
+def update_declined(target_version: str) -> str:
+    return (
+        f"Ок, <code>{target_version}</code> пока не ставим.\n"
+        "Про эту версию больше не напомню — запустить можно из админки, раздел «Обновления»."
+    )
+
+
+def update_result(result) -> str:
+    if result.status == "applied":
+        head = (
+            f"✅ <code>{result.host}</code> ({result.country}): Xray "
+            f"{result.version_before or '?'} → <b>{result.version_after}</b>"
+        )
+        # The image lagging the release is the common case and is not a
+        # failure, so it is a footnote rather than a warning.
+        return f"{head}\n\n{result.error}" if result.error else head
+
+    return (
+        f"⚠️ <code>{result.host}</code> ({result.country}): обновить до "
+        f"{result.target_version} не удалось.\n\n"
+        f"{result.error or 'причина неизвестна'}\n\n"
+        "Нода продолжает работать на прежней версии."
+    )

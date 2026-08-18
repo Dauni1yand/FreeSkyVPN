@@ -17,6 +17,11 @@ CB_SUBSCRIPTION = "subscription"
 CB_TRIAL = "trial"
 CB_BUY_PREFIX = "buy:"
 CB_MENU = "menu"
+# Xray updates. The version travels in the callback data rather than a list
+# of row ids: Telegram caps callback_data at 64 bytes, and a fleet of five
+# nodes would already blow that budget with UUIDs.
+CB_UPD_APPROVE_PREFIX = "upd_ok:"
+CB_UPD_DECLINE_PREFIX = "upd_no:"
 
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -45,3 +50,22 @@ def subscription_menu(plans: list[Plan], trial_available: bool) -> InlineKeyboar
 
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_MENU))
     return builder.as_markup()
+
+
+def update_decision(target_version: str, node_count: int) -> InlineKeyboardMarkup:
+    """Approve or decline one Xray version, for every node it applies to."""
+    label = "Обновить" if node_count == 1 else f"Обновить все ({node_count})"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"⬆️ {label}", callback_data=f"{CB_UPD_APPROVE_PREFIX}{target_version}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✋ Не сейчас", callback_data=f"{CB_UPD_DECLINE_PREFIX}{target_version}"
+                )
+            ],
+        ]
+    )

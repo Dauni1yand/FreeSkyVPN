@@ -108,3 +108,55 @@ async def tier_reconciliation_loop() -> None:
     while True:
         await asyncio.to_thread(run_tier_reconciliation)
         await asyncio.sleep(interval)
+
+
+def run_xray_update_check() -> None:
+    """Ask the release feed and every node what Xray they are on.
+
+    Only ever *raises proposals* — nothing here restarts anything. Applying
+    is a separate pass that runs on approvals, which is the whole point of
+    splitting the two (see services/xray_updates.py).
+    """
+    from app.services import xray_updates
+
+    with SessionLocal() as db:
+        try:
+            raised = xray_updates.check_for_updates(db)
+            db.commit()
+            if raised:
+                logger.info("raised %d Xray update proposal(s)", len(raised))
+        except Exception:
+            db.rollback()
+            logger.exception("Xray update check failed")
+
+
+async def xray_update_check_loop() -> None:
+    settings = get_settings()
+    interval = settings.xray_update_check_interval_hours * 3600
+    while True:
+        # Network calls and one control-channel round trip per node; keep
+        # them off the event loop.
+        await asyncio.to_thread(run_xray_update_check)
+        await asyncio.sleep(interval)
+
+
+def run_xray_update_apply() -> None:
+    """Apply whatever an operator has approved since the last pass."""
+    from app.services import xray_updates
+
+    with SessionLocal() as db:
+        try:
+            applied = xray_updates.apply_approved(db, limit=get_settings().xray_update_apply_batch)
+            db.commit()
+            for update in applied:
+                logger.info("node %s update finished: %s", update.node_id, update.status.value)
+        except Exception:
+            db.rollback()
+            logger.exception("applying approved Xray updates failed")
+
+
+async def xray_update_apply_loop() -> None:
+    interval = get_settings().xray_update_apply_interval_seconds
+    while True:
+        await asyncio.to_thread(run_xray_update_apply)
+        await asyncio.sleep(interval)

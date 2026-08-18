@@ -61,6 +61,8 @@ services:
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}"
       HEAD_API_URL: http://head:8000
       HEAD_SERVICE_TOKEN: ${HEAD_SECRET_KEY}
+      # The only chat allowed to approve an Xray update from Telegram.
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
       PAYMENT_PROVIDER_TOKEN: ${PAYMENT_PROVIDER_TOKEN:-}
 
 volumes:

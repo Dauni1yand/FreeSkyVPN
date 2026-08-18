@@ -16,6 +16,7 @@ from app.db.models.logs import (
 from app.db.models.node import Assignment, Inbound, Node, SniCandidate, SniProbe
 from app.db.models.outbox import ConfigPush, PushReason
 from app.db.models.plan import Payment, Plan, Subscription
+from app.db.models.update import NodeUpdate, NodeUpdateStatus
 from app.db.models.user import AuthIdentity, User, UserSession
 
 __all__ = [
@@ -30,6 +31,8 @@ __all__ = [
     "Inbound",
     "Node",
     "NodeChannelEvent",
+    "NodeUpdate",
+    "NodeUpdateStatus",
     "Payment",
     "Plan",
     "PushReason",

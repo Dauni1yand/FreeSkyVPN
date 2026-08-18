@@ -34,8 +34,9 @@ from app.db.models.node import (
 )
 from app.db.models.outbox import ConfigPush
 from app.db.models.plan import Plan, Subscription, SubscriptionType
+from app.db.models.update import NodeUpdate, NodeUpdateStatus
 from app.db.models.user import AuthIdentity, User, UserStatus
-from app.services import provisioning
+from app.services import provisioning, xray_updates
 from app.services.admin_auth import (
     SESSION_COOKIE,
     audit,
@@ -585,6 +586,134 @@ def sni_toggle(db: DbSession, admin: CurrentAdmin, candidate_id: uuid.UUID):
     audit(db, admin, "sni.toggle", candidate.domain, str(candidate.active))
     db.commit()
     return redirect_with_flash("/admin/sni", "ok", f"{candidate.domain}: {'включён' if candidate.active else 'выключен'}.")
+
+
+# --- Xray updates --------------------------------------------------------
+
+
+@router.get("/updates")
+def updates_page(request: Request, db: DbSession, admin: CurrentAdmin):
+    """Everything about Xray versions in one place: what each node runs, what
+    is on offer, and what has been done about it.
+
+    The per-node current version is read from the last proposal rather than
+    queried live: this page is opened by a human waiting for it to render,
+    and one control-channel round trip per node would make that wait scale
+    with the fleet. The scheduled check is what keeps the numbers fresh.
+    """
+    nodes = list(db.scalars(select(Node).order_by(Node.country, Node.host)).all())
+    rows = list(
+        db.scalars(select(NodeUpdate).order_by(NodeUpdate.created_at.desc()).limit(100)).all()
+    )
+    hosts = {node.id: node for node in nodes}
+    for row in rows:
+        node = hosts.get(row.node_id)
+        row.host = node.host if node else "удалена"
+        row.country = node.country if node else "?"
+
+    pending = [row for row in rows if row.status == NodeUpdateStatus.pending]
+    history = [row for row in rows if row.status != NodeUpdateStatus.pending][:40]
+
+    # Latest *known* release: deliberately the cached answer rather than a
+    # fresh lookup, so opening this page cannot spend the GitHub rate limit
+    # or hang for the full timeout on a head that cannot reach GitHub.
+    latest = xray_updates.latest_release_version(cached_only=True)
+
+    return render(
+        request,
+        "updates.html",
+        admin,
+        page="updates",
+        nodes=nodes,
+        pending=pending,
+        history=history,
+        latest=latest,
+        node_versions=_node_versions(rows),
+    )
+
+
+def _node_versions(rows: list) -> dict:
+    """Best-known current version per node, newest observation first."""
+    seen: dict = {}
+    for row in rows:  # already ordered newest first
+        if row.node_id in seen:
+            continue
+        version = row.version_after or row.version_before
+        if version:
+            seen[row.node_id] = version
+    return seen
+
+
+@router.post("/updates/check")
+def updates_check(db: DbSession, admin: CurrentAdmin):
+    try:
+        raised = xray_updates.check_for_updates(db)
+    except Exception as exc:
+        # A broken feed is a message on the page, not a 500 in an
+        # operator's face.
+        db.rollback()
+        logger.exception("manual Xray update check failed")
+        return redirect_with_flash("/admin/updates", "err", f"Проверка не удалась: {exc}")
+
+    audit(db, admin, "updates.check", detail=f"raised={len(raised)}")
+    db.commit()
+
+    if raised:
+        return redirect_with_flash(
+            "/admin/updates", "ok", f"Найдено обновлений: {len(raised)}. Подтвердите нужные."
+        )
+    latest = xray_updates.latest_release_version()
+    if latest is None:
+        return redirect_with_flash(
+            "/admin/updates",
+            "warn",
+            "Не удалось прочитать список релизов Xray — GitHub недоступен с этого сервера.",
+        )
+    return redirect_with_flash(
+        "/admin/updates", "ok", f"Всё актуально: последняя версия Xray — {latest}."
+    )
+
+
+@router.post("/updates/{update_id}/decide")
+def updates_decide(db: DbSession, admin: CurrentAdmin, update_id: uuid.UUID, approve: FormStr):
+    changed = xray_updates.decide(db, [update_id], approve=approve == "1", by=admin)
+    if not changed:
+        # Already decided — most often the same update approved from Telegram
+        # a moment earlier.
+        db.rollback()
+        return redirect_with_flash("/admin/updates", "warn", "Это обновление уже решено.")
+
+    audit(db, admin, "updates.decide", str(update_id), approve)
+    db.commit()
+    if approve == "1":
+        return redirect_with_flash(
+            "/admin/updates",
+            "ok",
+            "Обновление поставлено в очередь. Нода перезапустится в течение минуты — "
+            "активные подключения на ней оборвутся и клиенты переподключатся сами.",
+        )
+    return redirect_with_flash("/admin/updates", "ok", "Обновление отклонено.")
+
+
+@router.post("/updates/approve-all")
+def updates_approve_all(db: DbSession, admin: CurrentAdmin, target_version: FormStr):
+    ids = [
+        row.id
+        for row in db.scalars(
+            select(NodeUpdate).where(
+                NodeUpdate.status == NodeUpdateStatus.pending,
+                NodeUpdate.target_version == target_version,
+            )
+        ).all()
+    ]
+    changed = xray_updates.decide(db, ids, approve=True, by=admin)
+    audit(db, admin, "updates.approve_all", target_version, str(changed))
+    db.commit()
+    return redirect_with_flash(
+        "/admin/updates",
+        "ok",
+        f"Подтверждено нод: {changed}. Обновляются по одной, чтобы не уронить весь флот разом.",
+    )
 
 
 # --- events and audit ----------------------------------------------------

@@ -183,3 +183,62 @@ async def on_successful_payment(message: Message, api: HeadApi) -> None:
     await message.answer(
         texts.payment_succeeded(subscription.expires_at), reply_markup=keyboards.main_menu()
     )
+
+
+# --- Xray updates (admin only) ------------------------------------------
+
+
+def _is_admin(telegram_id: int) -> bool:
+    """Only the configured admin chat may authorise an update.
+
+    Checked here rather than trusted from the keyboard: an inline button's
+    callback_data is visible to anyone who can see the message, and a
+    forwarded message carries its buttons with it — so the button is a
+    convenience, and this is the actual gate.
+    """
+    configured = get_settings().telegram_admin_chat_id
+    return bool(configured) and str(telegram_id) == str(configured)
+
+
+async def _decide_update(callback: CallbackQuery, api: HeadApi, *, approve: bool) -> None:
+    if not _is_admin(callback.from_user.id):
+        await callback.answer(texts.NOT_ADMIN, show_alert=True)
+        return
+
+    prefix = keyboards.CB_UPD_APPROVE_PREFIX if approve else keyboards.CB_UPD_DECLINE_PREFIX
+    target_version = callback.data[len(prefix) :]
+
+    try:
+        changed = await api.decide_update_version(
+            target_version, approve=approve, by=f"telegram:{callback.from_user.id}"
+        )
+    except HeadApiError as exc:
+        logger.warning("could not record update decision: %s", exc)
+        await callback.answer(texts.GENERIC_ERROR, show_alert=True)
+        return
+
+    if not changed:
+        # Already answered — most often from the admin panel, or a second tap
+        # on the same button. Say so instead of implying something happened.
+        await callback.answer(texts.UPDATE_ALREADY_DECIDED, show_alert=True)
+        # Drop the buttons so the stale message stops inviting more taps.
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    text = (
+        texts.update_queued(target_version, changed)
+        if approve
+        else texts.update_declined(target_version)
+    )
+    await callback.message.edit_text(text)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(keyboards.CB_UPD_APPROVE_PREFIX))
+async def on_update_approve(callback: CallbackQuery, api: HeadApi) -> None:
+    await _decide_update(callback, api, approve=True)
+
+
+@router.callback_query(F.data.startswith(keyboards.CB_UPD_DECLINE_PREFIX))
+async def on_update_decline(callback: CallbackQuery, api: HeadApi) -> None:
+    await _decide_update(callback, api, approve=False)

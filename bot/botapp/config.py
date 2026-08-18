@@ -8,6 +8,11 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""
 
+    # The one chat allowed to approve Xray updates, and where update
+    # notifications are sent. Empty disables both — the admin panel still
+    # works, so an unset value costs a channel, not a capability.
+    telegram_admin_chat_id: str = ""
+
     head_api_url: str = "http://localhost:8000"
     # must match HEAD_SECRET_KEY on the head (see head/app/api/auth.py)
     head_service_token: str = ""
@@ -19,6 +24,8 @@ class Settings(BaseSettings):
 
     # how often the outbox worker drains pending config pushes
     outbox_poll_seconds: int = 15
+    # how often the bot asks the head about Xray updates worth announcing
+    updates_poll_seconds: int = 60
 
 
 @lru_cache
