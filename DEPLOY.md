@@ -174,7 +174,7 @@ Reality-туннель.
 
 ```bash
 python3 smoke_test.py --url http://127.0.0.1:8000 \
-    --token "$(grep ^HEAD_SECRET_KEY .env | cut -d= -f2)" \
+    --token "$(grep ^HEAD_SECRET_KEY .env | cut -d= -f2-)" \
     --admin-user admin --admin-password '<пароль>'
 ```
 
