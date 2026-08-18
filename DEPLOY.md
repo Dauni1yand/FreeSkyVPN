@@ -172,8 +172,11 @@ Reality-туннель.
 
 ## 9. Проверка
 
+Запускается внутри контейнера головы — там уже есть всё нужное, ставить на
+сервер ничего не надо:
+
 ```bash
-python3 smoke_test.py --url http://127.0.0.1:8000 \
+docker compose exec head python smoke_test.py \
     --token "$(grep ^HEAD_SECRET_KEY .env | cut -d= -f2-)" \
     --admin-user admin --admin-password '<пароль>'
 ```

@@ -18,6 +18,12 @@ WORKDIR /app
 # on sys.path.
 COPY head/ /app/
 RUN pip install --no-cache-dir .
+
+# The post-deploy smoke test lives at the repo root but belongs in this image:
+# it needs httpx, which is a dependency of the head and not of the server it
+# runs on, so requiring an operator to install anything on the host to check
+# their own deployment is the wrong trade.
+COPY smoke_test.py /app/smoke_test.py
 # provision_node.py runs bootstrap_node.sh on the node; the admin panel reads
 # the same script from this path.
 COPY provisioning/ /provisioning/
