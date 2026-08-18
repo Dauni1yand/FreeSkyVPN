@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models.node import Inbound, InboundState, Node, SniCandidate
+from app.db.models.node import Inbound, InboundState, Node, SniCandidate, SniProbe
 from app.services import keygen
 from app.services.timeutil import as_aware
 from app.services.transports import DEFAULT_TRANSPORT, TransportSpec
@@ -88,29 +88,60 @@ def pick_port(db: Session, node: Node) -> int:
     raise RuntimeError(f"no free port left on node {node.id}")
 
 
-def pick_sni(db: Session, exclude: set[str] | None = None) -> SniCandidate:
-    """Least-burned active candidate, skipping any the caller rules out.
+def pick_sni(db: Session, node: Node, exclude: set[str] | None = None) -> SniCandidate:
+    """Best candidate for this node, skipping any the caller rules out.
 
-    Ordering by burn_count is a weak signal on purpose: a dead inbound never
-    reveals whether its SNI, its port or its node's IP was the blocked part,
-    so a burned domain is deprioritised rather than retired.
+    Preference order:
+
+      1. Domains a recent probe *from this node* found usable, fastest first.
+         Reality relays a prober's handshake from the node to this host, so a
+         domain verified from anywhere else is a guess.
+      2. Anything else in the pool, for a node that has not been probed yet.
+
+    Within each group the least-burned domain wins. Burn count stays a weak
+    signal on purpose: a dead inbound never reveals whether its SNI, its port
+    or its node's IP was the blocked part, so a burned domain is
+    deprioritised rather than retired.
     """
     exclude = exclude or set()
-    candidates = db.scalars(
+    settings = get_settings()
+    fresh_after = datetime.now(UTC) - timedelta(hours=settings.sni_probe_max_age_hours)
+
+    verified = db.execute(
+        select(SniCandidate, SniProbe.latency_ms)
+        .join(SniProbe, SniProbe.candidate_id == SniCandidate.id)
+        .where(
+            SniCandidate.active.is_(True),
+            SniProbe.node_id == node.id,
+            SniProbe.ok.is_(True),
+            SniProbe.checked_at >= fresh_after,  # a stale verdict is not a verdict
+        )
+        .order_by(SniCandidate.burn_count.asc(), SniProbe.latency_ms.asc().nulls_last())
+    ).all()
+
+    for candidate, _latency in verified:
+        if candidate.domain not in exclude:
+            return candidate
+
+    unverified = db.scalars(
         select(SniCandidate)
         .where(SniCandidate.active.is_(True))
         .order_by(SniCandidate.burn_count.asc(), SniCandidate.last_burned_at.asc().nulls_first())
     ).all()
 
-    for candidate in candidates:
+    for candidate in unverified:
         if candidate.domain not in exclude:
             return candidate
 
     # Every remaining candidate was excluded — fall back to the least-burned
     # one anyway, since a working-but-repeated SNI beats no config at all.
-    if candidates:
-        return candidates[0]
-    raise NoSniAvailableError("sni_candidates pool is empty; seed it before serving users")
+    if verified:
+        return verified[0][0]
+    if unverified:
+        return unverified[0]
+    raise NoSniAvailableError(
+        "sni_candidates pool is empty; run SNI discovery or seed SNI_SEED_DOMAINS"
+    )
 
 
 def create_inbound(
@@ -120,7 +151,7 @@ def create_inbound(
     exclude_snis: set[str] | None = None,
 ) -> Inbound:
     keypair = keygen.generate_reality_keypair()
-    sni = pick_sni(db, exclude=exclude_snis)
+    sni = pick_sni(db, node, exclude=exclude_snis)
 
     inbound = Inbound(
         node_id=node.id,

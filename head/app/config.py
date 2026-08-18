@@ -42,6 +42,27 @@ class Settings(BaseSettings):
     preferred_ports: tuple[int, ...] = (443, 8443, 2053, 2083, 2087, 2096)
     fallback_port_range: tuple[int, int] = (20000, 60000)
 
+    # --- automatic SNI discovery (app/services/sni_discovery.py) ---
+    sni_use_tranco: bool = True
+    # How many domains to keep in the candidate pool.
+    sni_pool_size: int = 200
+    # Skip the very top of the popularity ranking: the largest platforms are
+    # the most likely to be individually handled by a censor, and several are
+    # themselves blocked in the target market.
+    sni_skip_top_ranks: int = 500
+    sni_probe_batch: int = 100
+    sni_probe_timeout_s: float = 6.0
+    # A probe verdict older than this is treated as stale during selection.
+    sni_probe_max_age_hours: int = 168
+    # Fallback / supplementary domains when no popularity source is reachable.
+    sni_seed_domains: tuple[str, ...] = ()
+    # Never propose our own infrastructure as a destination.
+    own_domains: tuple[str, ...] = ()
+    sni_refresh_interval_hours: int = 24
+    # Set false to run maintenance from cron (POST /api/v1/sni/refresh) instead
+    # of in-process — useful when several head replicas would otherwise all probe.
+    sni_maintenance_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

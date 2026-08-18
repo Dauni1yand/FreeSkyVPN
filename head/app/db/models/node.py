@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
 )
@@ -149,4 +150,40 @@ class SniCandidate(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     burn_count: Mapped[int] = mapped_column(Integer, default=0)
     last_burned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # "auto" for anything discovery pulled from a popularity ranking,
+    # "static" for domains an operator added by hand.
+    source: Mapped[str] = mapped_column(String(32), default="static")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    probes: Mapped[list["SniProbe"]] = relationship(back_populates="candidate", cascade="all, delete-orphan")
+
+
+class SniProbe(Base):
+    """One node's verdict on one candidate domain.
+
+    Per node rather than global because the measurement is node-relative:
+    Reality relays a prober's handshake from the node to this host, so
+    reachability and latency are properties of the node-to-domain path, and
+    a domain that is fast from Amsterdam may be useless from Singapore.
+    """
+
+    __tablename__ = "sni_probes"
+    __table_args__ = (UniqueConstraint("node_id", "candidate_id", name="uq_sni_probe_node_candidate"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    node_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("nodes.id", ondelete="CASCADE"))
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("sni_candidates.id", ondelete="CASCADE")
+    )
+
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    tls_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    alpn: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # False when the probe had to be taken from the head because no tunnel to
+    # the node could be opened — the verdict is then weaker than it looks.
+    from_node: Mapped[bool] = mapped_column(Boolean, default=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    candidate: Mapped["SniCandidate"] = relationship(back_populates="probes")

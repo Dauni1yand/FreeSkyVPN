@@ -80,7 +80,14 @@ def _direct_client(node: Node, certs: NodeCertBundle) -> httpx.Client:
     )
 
 
-def _tunnelled_client(node: Node, certs: NodeCertBundle) -> httpx.Client | None:
+def tunnel_socks_proxy(node: Node) -> tuple[str, int] | None:
+    """Start (or reuse) this node's Reality tunnel and return its local SOCKS address.
+
+    Traffic sent through it egresses at the node, which is what lets the head
+    measure anything from a node's network position — see
+    services/sni_discovery.py, which uses it to probe candidate destinations
+    from where they will actually be contacted from.
+    """
     control_inbound = _control_inbound(node)
     if control_inbound is None:
         return None  # node predates the control-channel inbound, or bootstrap skipped it
@@ -98,7 +105,15 @@ def _tunnelled_client(node: Node, certs: NodeCertBundle) -> httpx.Client | None:
         tunnel = RealityTunnel(params)
         _tunnels[str(node.id)] = tunnel
 
-    local_port = tunnel.start()
+    return "127.0.0.1", tunnel.start()
+
+
+def _tunnelled_client(node: Node, certs: NodeCertBundle) -> httpx.Client | None:
+    proxy = tunnel_socks_proxy(node)
+    if proxy is None:
+        return None
+
+    _host, local_port = proxy
     return httpx.Client(
         base_url=f"https://{node.host}:{node.control_port}",
         verify=certs.ca_cert,
