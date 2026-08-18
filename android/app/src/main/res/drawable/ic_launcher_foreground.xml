@@ -1,0 +1,18 @@
+<!--
+    Adaptive-icon foreground. The art sits inside the middle 66dp of the
+    108dp canvas: everything outside that can be cropped away by whichever
+    mask the launcher applies, and a shape drawn to the edges loses its
+    corners on round-icon launchers.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,32 L38,39 L38,55 C38,66 45,75.5 54,78 C63,75.5 70,66 70,55 L70,39 Z" />
+    <path
+        android:fillColor="#30D158"
+        android:pathData="M47.5,54.5 L52,59 L61,50 L64,53 L52,65 L44.5,57.5 Z" />
+</vector>

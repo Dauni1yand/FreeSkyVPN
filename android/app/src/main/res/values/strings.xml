@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FreeSkyVPN</string>
+    <string name="notification_connected">VPN включён</string>
+    <string name="notification_connecting">Подключаюсь…</string>
+    <string name="disconnect">Отключить</string>
+</resources>

@@ -7,3 +7,13 @@ __pycache__/
 # Head's mTLS identity and node certificates — never commit
 secrets/
 install.log
+
+# Android
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+# Vendored native libraries — fetched per the instructions in app/libs/README.md
+android/app/libs/*.aar
+android/app/src/main/jniLibs/
+android/app/src/main/assets/*.dat

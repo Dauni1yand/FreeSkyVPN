@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Nothing is backed up or transferred to a new device.
+
+    The bearer token is the account and it is bound to this install; copying
+    it to another phone would leave two devices holding the same credential
+    with no way to tell them apart or revoke one. Account recovery is the
+    Telegram link, which is deliberate and visible, rather than a silent
+    cloud restore.
+-->
+<data-extraction-rules>
+    <cloud-backup><exclude domain="root" /></cloud-backup>
+    <device-transfer><exclude domain="root" /></device-transfer>
+</data-extraction-rules>
