@@ -30,7 +30,16 @@ BOOTSTRAP_SCRIPT = Path(__file__).parent / "bootstrap_node.sh"
 REMOTE_CERT_PATH = "/root/freeskyvpn_head_client_cert.pem"
 
 
-def run_bootstrap(host: str, ssh_user: str, client_cert: Path, control_port: int, sni: str, reality_port: int) -> dict:
+def run_bootstrap(
+    host: str,
+    ssh_user: str,
+    client_cert: Path,
+    control_port: int,
+    sni: str,
+    reality_port: int,
+    tier: str,
+    shaped_mbit: int,
+) -> dict:
     print(f"[provision] copying head client cert to {host}", file=sys.stderr)
     subprocess.run(
         ["scp", "-o", "StrictHostKeyChecking=accept-new", str(client_cert), f"{ssh_user}@{host}:{REMOTE_CERT_PATH}"],
@@ -48,6 +57,8 @@ def run_bootstrap(host: str, ssh_user: str, client_cert: Path, control_port: int
             str(control_port),
             sni,
             str(reality_port),
+            tier,
+            str(shaped_mbit),
         ],
         input=BOOTSTRAP_SCRIPT.read_text(),
         text=True,
@@ -80,13 +91,35 @@ def main() -> None:
     parser.add_argument("--control-port", type=int, default=62050)
     parser.add_argument("--control-sni", default="www.microsoft.com")
     parser.add_argument("--control-reality-port", type=int, default=8443)
+    parser.add_argument(
+        "--tier",
+        choices=["free", "paid"],
+        default="free",
+        help="free nodes are bandwidth-shaped at provisioning time; paid nodes are not",
+    )
+    parser.add_argument(
+        "--shaped-mbit",
+        type=int,
+        default=10,
+        help="interface cap for a free node, shared by its users (ignored for paid)",
+    )
     args = parser.parse_args()
 
     payload = run_bootstrap(
-        args.host, args.ssh_user, args.client_cert, args.control_port, args.control_sni, args.control_reality_port
+        args.host,
+        args.ssh_user,
+        args.client_cert,
+        args.control_port,
+        args.control_sni,
+        args.control_reality_port,
+        args.tier,
+        args.shaped_mbit,
     )
     node = register_with_head(args.api_url, payload, args.country)
-    print(f"[provision] registered node {node['id']} ({node['host']}, {node['country']})")
+    print(
+        f"[provision] registered node {node['id']} "
+        f"({node['host']}, {node['country']}, tier={node['tier']})"
+    )
 
 
 if __name__ == "__main__":

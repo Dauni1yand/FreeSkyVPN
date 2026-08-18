@@ -28,6 +28,8 @@ set -euo pipefail
 CONTROL_PORT="${1:-62050}"
 CONTROL_SNI="${2:-www.microsoft.com}"
 CONTROL_PORT_REALITY="${3:-8443}"
+NODE_TIER="${4:-free}"          # free | paid
+SHAPED_MBIT="${5:-10}"          # only applied when NODE_TIER=free
 HEAD_CLIENT_CERT_PATH="/root/freeskyvpn_head_client_cert.pem"
 MARZBAN_NODE_DIR="/var/lib/marzban-node"
 
@@ -78,6 +80,52 @@ if command -v ufw &>/dev/null; then
     ufw allow "$CONTROL_PORT_REALITY"/tcp || true
 fi
 
+# Speed shaping. Xray-core has no per-user bandwidth limit (the `speedLimit`
+# policy field seen in various guides is silently ignored — measured, not
+# assumed), so the free/paid split is delivered by putting the two tiers on
+# different nodes and shaping the free ones here, once. Nothing has to run on
+# the node again afterwards, which keeps SSH to provisioning only.
+#
+# This is an interface-wide cap with fair queueing between flows, not a
+# guaranteed per-user rate: free users on the node share `SHAPED_MBIT`, and
+# fq_codel keeps one heavy user from starving the rest. That is the honest
+# description of what this delivers.
+if [[ "$NODE_TIER" == "free" ]]; then
+    IFACE="$(ip route show default | awk '/default/ {print $5; exit}')"
+    if [[ -z "$IFACE" ]]; then
+        echo "could not determine the default interface; skipping shaping" >&2
+    else
+        log "shaping $IFACE to ${SHAPED_MBIT}mbit (free tier)"
+        tc qdisc del dev "$IFACE" root 2>/dev/null || true
+        tc qdisc add dev "$IFACE" root handle 1: htb default 10
+        tc class add dev "$IFACE" parent 1: classid 1:10 \
+            htb rate "${SHAPED_MBIT}mbit" ceil "${SHAPED_MBIT}mbit"
+        tc qdisc add dev "$IFACE" parent 1:10 handle 10: fq_codel
+        # tc is not persistent across reboots; re-apply on boot.
+        cat > /etc/systemd/system/freeskyvpn-shaping.service <<UNIT
+[Unit]
+Description=FreeSkyVPN free-tier traffic shaping
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'tc qdisc del dev $IFACE root 2>/dev/null; \\
+  tc qdisc add dev $IFACE root handle 1: htb default 10 && \\
+  tc class add dev $IFACE parent 1: classid 1:10 htb rate ${SHAPED_MBIT}mbit ceil ${SHAPED_MBIT}mbit && \\
+  tc qdisc add dev $IFACE parent 1:10 handle 10: fq_codel'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        systemctl daemon-reload && systemctl enable --now freeskyvpn-shaping.service || \
+            echo "could not install the shaping unit; shaping will not survive a reboot" >&2
+    fi
+else
+    log "paid tier: leaving bandwidth unshaped"
+fi
+
 # marzban-node writes its self-signed cert on first start. The head pins this
 # exact certificate as the only one it will accept from this node (there is no
 # shared CA), so provisioning is not finished until we have it.
@@ -97,5 +145,5 @@ NODE_HOST="$(curl -fsS https://api.ipify.org || hostname -I | awk '{print $1}')"
 
 log "done — registration payload follows on stdout"
 cat <<JSON
-{"host": "$NODE_HOST", "control_port": $CONTROL_PORT, "tls_cert_b64": "$TLS_CERT_B64", "control_inbound": {"port": $CONTROL_PORT_REALITY, "sni": "$CONTROL_SNI", "reality_private_key": "$PRIVATE_KEY", "reality_public_key": "$PUBLIC_KEY", "reality_short_id": "$SHORT_ID", "control_client_uuid": "$CONTROL_CLIENT_UUID"}}
+{"host": "$NODE_HOST", "control_port": $CONTROL_PORT, "tier": "$NODE_TIER", "shaped_mbit": $( [[ "$NODE_TIER" == "free" ]] && echo "$SHAPED_MBIT" || echo null ), "tls_cert_b64": "$TLS_CERT_B64", "control_inbound": {"port": $CONTROL_PORT_REALITY, "sni": "$CONTROL_SNI", "reality_private_key": "$PRIVATE_KEY", "reality_public_key": "$PUBLIC_KEY", "reality_short_id": "$SHORT_ID", "control_client_uuid": "$CONTROL_CLIENT_UUID"}}
 JSON

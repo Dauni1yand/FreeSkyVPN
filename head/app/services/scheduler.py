@@ -67,3 +67,44 @@ async def sni_maintenance_loop() -> None:
         # cannot stall request handling.
         await asyncio.to_thread(run_sni_maintenance)
         await asyncio.sleep(interval)
+
+
+def run_tier_reconciliation() -> None:
+    """Move users whose entitlement no longer matches the node they are on.
+
+    Needed because expiry is not an event anybody delivers: a subscription
+    simply stops being current at a timestamp, and without a sweep a lapsed
+    user would keep the paid tier until they happened to reconnect.
+    """
+    from app.services.config_selector import NoCapacityError
+    from app.services.tiering import reconcile_placement, users_on_wrong_tier
+
+    with SessionLocal() as db:
+        try:
+            misplaced = users_on_wrong_tier(db)
+        except Exception:
+            logger.exception("could not determine misplaced users")
+            return
+
+        moved = 0
+        for user in misplaced:
+            try:
+                if reconcile_placement(db, user):
+                    moved += 1
+                db.commit()
+            except NoCapacityError:
+                # No node of the right tier right now; try again next sweep.
+                db.rollback()
+            except Exception:
+                db.rollback()
+                logger.exception("failed to move user %s to their proper tier", user.id)
+
+        if moved:
+            logger.info("moved %d user(s) to their proper tier", moved)
+
+
+async def tier_reconciliation_loop() -> None:
+    interval = get_settings().tier_reconcile_interval_minutes * 60
+    while True:
+        await asyncio.to_thread(run_tier_reconciliation)
+        await asyncio.sleep(interval)

@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from app.api.auth import ServiceAuth
 from app.api.deps import DbSession
-from app.db.models.node import Inbound, Node, NodeChannelState, NodeStatus
+from app.db.models.node import Inbound, Node, NodeChannelState, NodeStatus, NodeTier
 
 router = APIRouter(prefix="/api/v1/nodes", tags=["nodes"], dependencies=[ServiceAuth])
 
@@ -34,6 +34,9 @@ class NodeRegisterRequest(BaseModel):
     host: str
     control_port: int = 62050
     country: str
+    tier: NodeTier = NodeTier.free
+    # What tc was configured with on a free node; None on paid nodes.
+    shaped_mbit: int | None = None
     control_inbound: ControlInboundIn
     # base64 of the node's self-signed /var/lib/marzban-node/ssl_cert.pem.
     # Base64 rather than raw PEM because bootstrap_node.sh emits this inside a
@@ -47,6 +50,8 @@ class NodeResponse(BaseModel):
     country: str
     status: NodeStatus
     channel_state: NodeChannelState
+    tier: NodeTier
+    shaped_mbit: int | None
 
 
 @router.post("/register", response_model=NodeResponse)
@@ -61,6 +66,8 @@ def register_node(payload: NodeRegisterRequest, db: DbSession) -> NodeResponse:
         control_port=payload.control_port,
         country=payload.country,
         status=NodeStatus.active,
+        tier=payload.tier,
+        shaped_mbit=payload.shaped_mbit,
         tls_cert_pem=tls_cert_pem,
     )
     db.add(node)
@@ -82,13 +89,29 @@ def register_node(payload: NodeRegisterRequest, db: DbSession) -> NodeResponse:
     db.commit()
     db.refresh(node)
 
-    return NodeResponse(id=node.id, host=node.host, country=node.country, status=node.status, channel_state=node.channel_state)
+    return NodeResponse(
+        id=node.id,
+        host=node.host,
+        country=node.country,
+        status=node.status,
+        channel_state=node.channel_state,
+        tier=node.tier,
+        shaped_mbit=node.shaped_mbit,
+    )
 
 
 @router.get("", response_model=list[NodeResponse])
 def list_nodes(db: DbSession) -> list[NodeResponse]:
     nodes = db.scalars(select(Node)).all()
     return [
-        NodeResponse(id=n.id, host=n.host, country=n.country, status=n.status, channel_state=n.channel_state)
+        NodeResponse(
+            id=n.id,
+            host=n.host,
+            country=n.country,
+            status=n.status,
+            channel_state=n.channel_state,
+            tier=n.tier,
+            shaped_mbit=n.shaped_mbit,
+        )
         for n in nodes
     ]

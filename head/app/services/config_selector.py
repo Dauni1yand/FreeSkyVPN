@@ -28,6 +28,7 @@ from app.db.models.node import (
     Node,
     NodeChannelState,
     NodeStatus,
+    NodeTier,
 )
 from app.db.models.user import User
 from app.node_manager.exceptions import NodeChannelError
@@ -58,8 +59,10 @@ def active_assignment(db: Session, user: User) -> Assignment | None:
     )
 
 
-def eligible_nodes(db: Session, exclude_node_ids: set | None = None) -> list[Node]:
-    """Reachable, accepting nodes, least loaded first."""
+def eligible_nodes(
+    db: Session, exclude_node_ids: set | None = None, tier: NodeTier | None = None
+) -> list[Node]:
+    """Reachable, accepting nodes, least loaded first, optionally one tier only."""
     exclude_node_ids = exclude_node_ids or set()
 
     load_subq = (
@@ -84,6 +87,8 @@ def eligible_nodes(db: Session, exclude_node_ids: set | None = None) -> list[Nod
     for node, load in rows:
         if node.id in exclude_node_ids:
             continue
+        if tier is not None and node.tier != tier:
+            continue
         node.load = int(load)  # keep the denormalised counter honest for admin views
         nodes.append(node)
     return nodes
@@ -103,6 +108,36 @@ def live_inbound(db: Session, node: Node, exclude_inbound_ids: set | None = None
     return next((ib for ib in inbounds if ib.id not in exclude_inbound_ids), None)
 
 
+def _nodes_for_tier(db: Session, user: User, exclude_node_ids: set | None) -> list[Node]:
+    """Candidate nodes for this user, respecting the free/paid split.
+
+    The two directions are deliberately asymmetric:
+
+      paid user, no paid node   fall back to a free node. Degraded service
+                                beats no service, and the user keeps their
+                                entitlement the moment capacity returns
+                                (tiering.reconcile_placement sweeps for it).
+      free user, no free node   refuse. Placing them on a paid node would
+                                hand out the paid product for nothing *and*
+                                eat the capacity that paying users are
+                                promised priority on.
+    """
+    # imported here: tiering imports this module for assign_config
+    from app.services.tiering import required_tier
+
+    wanted = required_tier(db, user)
+    nodes = eligible_nodes(db, exclude_node_ids=exclude_node_ids, tier=wanted)
+    if nodes or wanted == NodeTier.free:
+        return nodes
+
+    fallback = eligible_nodes(db, exclude_node_ids=exclude_node_ids, tier=NodeTier.free)
+    if fallback:
+        logger.warning(
+            "no paid-tier capacity for user %s, placing on a free node until some frees up", user.id
+        )
+    return fallback
+
+
 def assign_config(
     db: Session,
     user: User,
@@ -119,7 +154,7 @@ def assign_config(
     explicitly reversing the rows it added instead.
     """
     exclude_inbound_ids = exclude_inbound_ids or set()
-    nodes = eligible_nodes(db, exclude_node_ids=exclude_node_ids)
+    nodes = _nodes_for_tier(db, user, exclude_node_ids)
     if not nodes:
         raise NoCapacityError("no reachable node is currently accepting users")
 

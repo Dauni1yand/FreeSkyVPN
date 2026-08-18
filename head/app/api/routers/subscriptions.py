@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel
 from app.api.auth import ServiceAuth
 from app.api.deps import DbSession
 from app.db.models.user import User
+from app.services.config_selector import NoCapacityError
 from app.services.subscriptions import (
     TrialAlreadyUsedError,
     UnknownPlanError,
@@ -19,6 +21,9 @@ from app.services.subscriptions import (
     start_trial,
     status_for,
 )
+from app.services.tiering import reconcile_placement
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["subscriptions"], dependencies=[ServiceAuth])
 
@@ -90,6 +95,11 @@ def activate_trial(payload: UserRequest, db: DbSession) -> SubscriptionResponse:
     except TrialAlreadyUsedError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
+    try:
+        reconcile_placement(db, user)
+    except NoCapacityError:
+        logger.warning("trial user %s could not be placed on a paid node yet", user.id)
+
     db.commit()
     return SubscriptionResponse(**result.__dict__)
 
@@ -109,6 +119,15 @@ def payment_confirm(payload: PaymentConfirmRequest, db: DbSession) -> Subscripti
         )
     except UnknownPlanError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    # An upgrade should be felt now, not at the next reconnect. A failure to
+    # find paid capacity must not fail the payment itself — the money is
+    # taken and the entitlement recorded either way, and the periodic sweep
+    # in scheduler.py will place them once capacity exists.
+    try:
+        reconcile_placement(db, user)
+    except NoCapacityError:
+        logger.warning("paid user %s could not be placed on a paid node yet", user.id)
 
     db.commit()
     return SubscriptionResponse(**result.__dict__)

@@ -6,22 +6,27 @@ from fastapi import FastAPI
 
 from app.api.routers import connect, health, nodes, pushes, sni, subscriptions, users
 from app.config import get_settings
-from app.services.scheduler import sni_maintenance_loop
+from app.services.scheduler import sni_maintenance_loop, tier_reconciliation_loop
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Runs SNI pool upkeep in the background — see app/services/scheduler.py."""
-    task = None
+    """Background upkeep: SNI pool freshness and free/paid placement.
+
+    Both live in app/services/scheduler.py.
+    """
+    tasks = []
     if get_settings().sni_maintenance_enabled:
-        task = asyncio.create_task(sni_maintenance_loop())
+        tasks.append(asyncio.create_task(sni_maintenance_loop()))
         logger.info("SNI maintenance loop started")
+    tasks.append(asyncio.create_task(tier_reconciliation_loop()))
+    logger.info("tier reconciliation loop started")
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
 
 

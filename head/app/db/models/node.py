@@ -24,6 +24,22 @@ class NodeStatus(str, enum.Enum):
     draining = "draining"
 
 
+class NodeTier(str, enum.Enum):
+    """Which audience a node serves.
+
+    Xray-core has no per-user bandwidth limit (verified by measurement — the
+    `speedLimit` policy field found in various guides is silently ignored,
+    behaving exactly like a field that does not exist). Separating the tiers
+    onto different nodes is therefore how "free is slower, paid gets priority
+    and full speed" is delivered: a free node is shaped once with `tc` at
+    provisioning time, a paid node is not, and no per-user classification or
+    runtime execution on the node is needed for either.
+    """
+
+    free = "free"
+    paid = "paid"
+
+
 class NodeChannelState(str, enum.Enum):
     """State of the head -> node *control* channel — independent of whether the
     node's Xray is actually serving users, which keeps running regardless."""
@@ -47,6 +63,12 @@ class Node(Base):
     control_port: Mapped[int] = mapped_column(Integer, default=62050)  # marzban-node SERVICE_PORT
     country: Mapped[str] = mapped_column(String(64))
     status: Mapped[NodeStatus] = mapped_column(Enum(NodeStatus, name="node_status"), default=NodeStatus.active)
+
+    tier: Mapped[NodeTier] = mapped_column(Enum(NodeTier, name="node_tier"), default=NodeTier.free)
+    # The rate `tc` was configured with at provisioning time, recorded so the
+    # head can report what a free user actually gets. Null on paid nodes,
+    # which are left unshaped.
+    shaped_mbit: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # marzban-node generates its own self-signed cert on first boot; the head
     # captures it during provisioning and pins it as the only cert it will

@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     # of in-process — useful when several head replicas would otherwise all probe.
     sni_maintenance_enabled: bool = True
 
+    # --- tiering (phase 4) ---
+    tier_reconcile_interval_minutes: int = 30
+    # Rate a free node is shaped to at provisioning time. Recorded on the node
+    # row so the head can report what free actually gets.
+    free_node_shaped_mbit: int = 10
+
 
 @lru_cache
 def get_settings() -> Settings:
