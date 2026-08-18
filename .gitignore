@@ -17,3 +17,6 @@ android/local.properties
 android/app/libs/*.aar
 android/app/src/main/jniLibs/
 android/app/src/main/assets/*.dat
+
+# Economics model scratch
+economics/__pycache__/
