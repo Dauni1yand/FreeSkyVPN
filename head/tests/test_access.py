@@ -31,10 +31,10 @@ def settings(monkeypatch):
     get_settings.cache_clear()
 
 
-def _watch(db, user):
-    """One completed ad, start to finish."""
-    nonce = access.issue_nonce(db, user)
-    return access.redeem_nonce(db, user, nonce.nonce)
+def _watch(db, user, package="hour"):
+    """One completed ad, start to finish. Returns the resulting access state."""
+    nonce = access.issue_nonce(db, user, package)
+    return access.redeem_nonce(db, user, nonce.nonce).state
 
 
 # --- the basic loop ------------------------------------------------------
@@ -109,7 +109,7 @@ def test_every_grant_is_recorded(db):
     view = db.query(AdView).one()
     assert view.user_id == user.id
     assert view.reward_minutes == 60
-    assert view.source == "rewarded_video"
+    assert view.source == "rewarded"
 
 
 # --- not giving it away --------------------------------------------------
@@ -174,10 +174,10 @@ def test_the_network_callback_is_believed_even_then(db, monkeypatch):
     user = make_user(db)
     nonce = access.issue_nonce(db, user)
 
-    state = access.redeem_verified(db, nonce.nonce)
+    result = access.redeem_verified(db, nonce.nonce)
 
-    assert state.active
-    assert db.query(AdView).one().source == "ssv"
+    assert result.state.active
+    assert result.complete
 
 
 def test_the_network_callback_also_spends_the_token(db):
@@ -277,3 +277,81 @@ def test_issuing_a_token_does_not_grant_anything(db):
     assert not access.has_access(user)
     assert db.query(AdNonce).count() == 1
     assert db.query(AdView).count() == 0
+
+
+# --- packages ------------------------------------------------------------
+
+
+def test_the_short_package_buys_fifteen_minutes(db):
+    user = make_user(db)
+
+    state = _watch(db, user, "short")
+
+    assert 800 < state.seconds_remaining <= 900
+
+
+def test_the_short_package_uses_a_skippable_ad():
+    """It cannot be verified by anyone — a skippable interstitial has no
+    completion signal — which is exactly why it buys the least time."""
+    assert access.PACKAGES["short"].kind == access.AdKind.interstitial
+    assert access.PACKAGES["hour"].kind == access.AdKind.rewarded
+
+
+def test_the_two_hour_package_needs_two_views(db):
+    user = make_user(db)
+    nonce = access.issue_nonce(db, user, "double")
+
+    first = access.redeem_nonce(db, user, nonce.nonce)
+    assert not first.complete
+    assert first.views_done == 1
+    assert 3500 < first.state.seconds_remaining <= 3600
+
+    second = access.redeem_nonce(db, user, nonce.nonce)
+    assert second.complete
+    assert 7100 < second.state.seconds_remaining <= 7200
+
+
+def test_abandoning_a_package_keeps_what_was_earned(db):
+    """Someone who watches the first of two ads and walks away must keep the
+    hour. Taking the view and giving nothing is the one behaviour certain to
+    stop people watching."""
+    user = make_user(db)
+    nonce = access.issue_nonce(db, user, "double")
+    access.redeem_nonce(db, user, nonce.nonce)
+
+    assert access.has_access(user)
+    assert 3500 < access.state_of(user).seconds_remaining <= 3600
+
+
+def test_a_finished_package_cannot_be_redeemed_again(db):
+    user = make_user(db)
+    nonce = access.issue_nonce(db, user, "double")
+    access.redeem_nonce(db, user, nonce.nonce)
+    access.redeem_nonce(db, user, nonce.nonce)
+
+    with pytest.raises(access.InvalidNonceError):
+        access.redeem_nonce(db, user, nonce.nonce)
+
+
+def test_an_unknown_package_is_refused(db):
+    """The reward is a server-side decision: a client that could name its
+    own would name a large one."""
+    with pytest.raises(access.UnknownPackageError):
+        access.issue_nonce(db, make_user(db), "one_year")
+
+
+def test_the_package_decides_the_reward_not_the_client(db):
+    user = make_user(db)
+    nonce = access.issue_nonce(db, user, "short")
+
+    result = access.redeem_nonce(db, user, nonce.nonce)
+
+    assert result.minutes_granted == 15
+
+
+def test_packages_stack_with_each_other(db):
+    user = make_user(db)
+    _watch(db, user, "short")
+    state = _watch(db, user, "hour")
+
+    assert 4400 < state.seconds_remaining <= 4500  # 75 minutes

@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     access_grace_minutes: int = 15
     access_grace_interval_hours: int = 6
 
+    # How often expired users are actually disconnected. Short on purpose:
+    # the gap between "time is up" and "the tunnel stops" is service given
+    # away, so it is measured in seconds rather than minutes.
+    access_expiry_interval_seconds: int = 60
+
     # How often lapsed users are moved down to the grace class.
     tier_reconcile_interval_minutes: int = 30
 

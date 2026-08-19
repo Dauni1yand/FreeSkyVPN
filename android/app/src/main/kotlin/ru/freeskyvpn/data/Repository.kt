@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import ru.freeskyvpn.core.Account
+import ru.freeskyvpn.core.AdProgress
+import ru.freeskyvpn.core.AdTicket
 import ru.freeskyvpn.core.LinkCode
 
 /**
@@ -71,14 +73,14 @@ class Repository(context: Context) {
         return api.account()
     }
 
-    /** The token to hand back when a rewarded ad finishes. */
-    suspend fun prepareAd(): String {
+    /** Start a run through a package's ads; the reply says what it wants. */
+    suspend fun prepareAd(packageCode: String): AdTicket {
         ensureRegistered()
-        return api.prepareAd().nonce
+        return api.prepareAd(packageCode)
     }
 
-    /** Claim the hour the user just earned. */
-    suspend fun completeAd(nonce: String): Account {
+    /** Credit one completed view. Time is granted per view, not per package. */
+    suspend fun completeAd(nonce: String): AdProgress {
         ensureRegistered()
         return api.completeAd(nonce)
     }

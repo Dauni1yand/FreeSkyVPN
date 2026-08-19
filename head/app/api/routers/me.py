@@ -151,11 +151,12 @@ class AccountResponse(BaseModel):
     access_active: bool
     access_expires_at: datetime | None
     access_seconds_remaining: int
-    # True when the current stretch came from the fallback rather than an
-    # ad, so the app can say why it feels slower.
+    #: True when the current stretch came from the fallback rather than an
+    #: ad, so the app can say why it feels slower.
     access_is_grace: bool
-    # Minutes the next completed ad will buy.
-    ad_reward_minutes: int
+    #: What the user can buy at the connect button. Served rather than
+    #: compiled into the app so the offer can change without a release.
+    packages: list[PackageOption]
 
 
 def _account(db: DbSession, user) -> AccountResponse:
@@ -173,7 +174,16 @@ def _account(db: DbSession, user) -> AccountResponse:
         access_expires_at=state.expires_at,
         access_seconds_remaining=state.seconds_remaining,
         access_is_grace=state.is_grace,
-        ad_reward_minutes=get_settings().ad_reward_minutes,
+        packages=[
+            PackageOption(
+                code=p.code,
+                label=p.label,
+                ad_kind=p.kind.value,
+                views=p.views,
+                total_minutes=p.total_minutes,
+            )
+            for p in access.PACKAGES.values()
+        ],
     )
 
 
@@ -185,39 +195,93 @@ def me(db: DbSession, user: CurrentUser) -> AccountResponse:
 # --- buying an hour with attention --------------------------------------
 
 
+class PackageOption(BaseModel):
+    """One thing the user can buy at the connect button."""
+
+    code: str
+    label: str
+    #: "rewarded" must be watched through; "interstitial" is skippable.
+    ad_kind: str
+    views: int
+    total_minutes: int
+
+
 class AdTicket(BaseModel):
     nonce: str
-    reward_minutes: int
+    package: str
+    ad_kind: str
+    views_required: int
+    minutes_per_view: int
+
+
+class AdPrepareRequest(BaseModel):
+    package: str = access.DEFAULT_PACKAGE
 
 
 @router.post("/me/ad/prepare", response_model=AdTicket)
-def ad_prepare(db: DbSession, user: CurrentUser) -> AdTicket:
-    """Issue the token the client returns once the ad finishes.
+def ad_prepare(payload: AdPrepareRequest, db: DbSession, user: CurrentUser) -> AdTicket:
+    """Issue the token covering one run through a package's ads.
 
-    Exists so that one recorded HTTP call is not an unlimited access
-    generator. It is friction rather than proof — a modified client can ask
-    for a token and claim the reward without showing anything — and the
-    real control is the network's own callback, see /ad/verify.
+    The package is validated here and stored on the token, so what a view is
+    worth stays a server-side decision. A client able to name its own reward
+    would name a large one.
+
+    The token is friction rather than proof — a modified client can ask for
+    one and claim the views without showing anything. The real control is
+    the network's own callback, see /ad/verify.
     """
-    nonce = access.issue_nonce(db, user)
+    try:
+        package = access.package_for(payload.package)
+    except access.UnknownPackageError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    nonce = access.issue_nonce(db, user, package.code)
     db.commit()
-    return AdTicket(nonce=nonce.nonce, reward_minutes=get_settings().ad_reward_minutes)
+    return AdTicket(
+        nonce=nonce.nonce,
+        package=package.code,
+        ad_kind=package.kind.value,
+        views_required=package.views,
+        minutes_per_view=package.minutes_per_view,
+    )
 
 
 class AdCompleteRequest(BaseModel):
     nonce: str
 
 
-@router.post("/me/ad/complete", response_model=AccountResponse)
-def ad_complete(payload: AdCompleteRequest, db: DbSession, user: CurrentUser) -> AccountResponse:
+class AdProgress(BaseModel):
+    views_done: int
+    views_required: int
+    minutes_granted: int
+    #: False while the package still owes the user another video.
+    complete: bool
+    account: AccountResponse
+
+
+@router.post("/me/ad/complete", response_model=AdProgress)
+def ad_complete(payload: AdCompleteRequest, db: DbSession, user: CurrentUser) -> AdProgress:
+    """Credit one completed view.
+
+    Time is granted per view, not per package: someone who watches the first
+    of two ads and closes the app keeps the hour they earned. Taking the
+    view and giving nothing would be the one behaviour guaranteed to make
+    people stop watching.
+    """
     try:
-        access.redeem_nonce(db, user, payload.nonce)
+        result = access.redeem_nonce(db, user, payload.nonce)
     except access.InvalidNonceError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     _settle(db, user)
     db.commit()
-    return _account(db, user)
+    return AdProgress(
+        views_done=result.views_done,
+        views_required=result.views_required,
+        minutes_granted=result.minutes_granted,
+        complete=result.complete,
+        account=_account(db, user),
+    )
 
 
 @router.post("/me/ad/unavailable", response_model=AccountResponse)
@@ -338,7 +402,6 @@ def get_routing_policy(_user: CurrentUser) -> RoutingPolicyResponse:
 
 class AdVerifyRequest(BaseModel):
     nonce: str
-    source: str = "ssv"
 
 
 @router.post("/ad/verify")
@@ -356,12 +419,16 @@ def ad_verify(payload: AdVerifyRequest, db: DbSession) -> dict:
     keeps it from being open to the internet in the meantime.
     """
     try:
-        state = access.redeem_verified(db, payload.nonce, source=payload.source)
+        result = access.redeem_verified(db, payload.nonce)
     except access.InvalidNonceError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     db.commit()
-    return {"granted_until": state.expires_at.isoformat() if state.expires_at else None}
+    return {
+        "granted_until": result.state.expires_at.isoformat() if result.state.expires_at else None,
+        "views_done": result.views_done,
+        "views_required": result.views_required,
+    }
 
 
 # --- service-side grants -------------------------------------------------

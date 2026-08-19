@@ -9,6 +9,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import ru.freeskyvpn.BuildConfig
 import ru.freeskyvpn.core.Account
+import ru.freeskyvpn.core.AdProgress
 import ru.freeskyvpn.core.AdTicket
 import ru.freeskyvpn.core.ConnectionConfig
 import ru.freeskyvpn.core.DeviceRegistration
@@ -61,11 +62,18 @@ class HeadApi(private val storage: Storage) {
 
     suspend fun account(): Account = get("/api/v1/me")
 
-    /** Ask for the token that will be handed back when the ad finishes. */
-    suspend fun prepareAd(): AdTicket = post("/api/v1/me/ad/prepare", "{}")
+    /**
+     * Ask for the token covering one run through a package's ads.
+     *
+     * The package is named here but priced by the server: the reply says
+     * how many views it wants and what each is worth, and those are the
+     * numbers that count.
+     */
+    suspend fun prepareAd(packageCode: String): AdTicket =
+        post("/api/v1/me/ad/prepare", json.encodeToString(mapOf("package" to packageCode)))
 
-    /** Claim the hour. The token is single-use and short-lived. */
-    suspend fun completeAd(nonce: String): Account =
+    /** Credit one completed view. The token is short-lived and spent when the package finishes. */
+    suspend fun completeAd(nonce: String): AdProgress =
         post("/api/v1/me/ad/complete", json.encodeToString(mapOf("nonce" to nonce)))
 
     /**

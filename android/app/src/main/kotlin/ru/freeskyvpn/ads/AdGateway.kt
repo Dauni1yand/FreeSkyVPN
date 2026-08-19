@@ -39,18 +39,34 @@ interface AdGateway {
         data class Unavailable(val reason: String) : Outcome
     }
 
-    /** Whether an ad is loaded and ready. False means [show] will likely fail. */
-    val isReady: Boolean
+    /**
+     * Which format to show.
+     *
+     * They are not interchangeable. A rewarded ad has a completion signal —
+     * and, once server-side verification is configured, a callback from the
+     * network — so the head can eventually be sure it was watched. An
+     * interstitial is skippable and has neither, which is why the package
+     * it pays for buys the least time.
+     */
+    enum class Kind { Rewarded, Interstitial }
+
+    /** Whether an ad of this kind is loaded. False means [show] will likely fail. */
+    fun isReady(kind: Kind): Boolean
 
     /**
-     * Show a rewarded ad and wait for it to finish.
+     * Show one ad and wait for it to finish.
      *
      * Must never throw: every failure path is an [Outcome.Unavailable], so
-     * that a broken SDK cannot take the connect button down with it.
+     * a broken SDK cannot take the connect button down with it.
+     *
+     * An [Kind.Interstitial] that the user skips still counts as
+     * [Outcome.Rewarded]: skipping is what "skippable" means, the
+     * impression was served and paid for, and refusing the reward would be
+     * charging for something we advertised as optional.
      */
-    suspend fun show(activity: Activity): Outcome
+    suspend fun show(activity: Activity, kind: Kind): Outcome
 
-    /** Start loading, so the next [show] does not make the user wait. */
+    /** Start loading both formats, so the next [show] does not make the user wait. */
     fun preload()
 }
 
@@ -64,9 +80,9 @@ interface AdGateway {
  * entirely on the fallback — which is exactly what is happening.
  */
 object NoAds : AdGateway {
-    override val isReady: Boolean get() = false
+    override fun isReady(kind: AdGateway.Kind): Boolean = false
 
-    override suspend fun show(activity: Activity): AdGateway.Outcome =
+    override suspend fun show(activity: Activity, kind: AdGateway.Kind): AdGateway.Outcome =
         AdGateway.Outcome.Unavailable("рекламная сеть не подключена")
 
     override fun preload() = Unit

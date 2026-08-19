@@ -212,6 +212,42 @@ def affordable_speed_per_user(a: Assumptions) -> float | None:
     return lo
 
 
+# --- comparing what the packages are worth ------------------------------
+
+
+@dataclass(frozen=True)
+class Package:
+    """One thing a user can buy with their attention."""
+
+    name: str
+    minutes: int
+    views: int
+    ecpm: float
+
+
+def revenue_per_hour_served(package: Package) -> float:
+    """Roubles earned per hour of VPN this package pays for.
+
+    The number that decides whether a short, cheap package is worth
+    offering. It is not obvious: a fifteen-minute grant against a skippable
+    ad earns *more* per hour served than an hour against a rewarded one,
+    because the time granted falls faster than the price does. Comparing
+    the ad prices alone gets this backwards.
+    """
+    revenue = package.views * package.ecpm / 1000.0
+    return revenue / (package.minutes / 60.0)
+
+
+def matching_ecpm(package: Package, benchmark: Package) -> float:
+    """The eCPM `package` needs to earn as much per hour as `benchmark`.
+
+    Below it, the shorter option is subsidising the longer one.
+    """
+    target = revenue_per_hour_served(benchmark)
+    hours = package.minutes / 60.0
+    return target * hours / package.views * 1000.0
+
+
 def _money(value: float) -> str:
     return f"{value:>12,.0f} ₽".replace(",", " ")
 

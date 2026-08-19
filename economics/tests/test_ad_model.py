@@ -132,3 +132,36 @@ def test_inactive_users_cost_nothing_and_earn_nothing():
     idle = evaluate(replace(BASE, users=10_000, active_share=0.1))
     assert engaged.nodes_needed > idle.nodes_needed
     assert engaged.revenue > idle.revenue
+
+
+# --- packages ------------------------------------------------------------
+
+
+from ad_model import Package, matching_ecpm, revenue_per_hour_served  # noqa: E402
+
+SHORT = Package("15 мин, пропускаемый", minutes=15, views=1, ecpm=40)
+HOUR = Package("1 час, полный", minutes=60, views=1, ecpm=120)
+DOUBLE = Package("2 часа, два полных", minutes=120, views=2, ecpm=120)
+
+
+def test_a_cheaper_ad_can_still_earn_more_per_hour_served():
+    """The counterintuitive result the packages rest on: a quarter of the
+    time against a third of the price is a better trade, and comparing ad
+    prices alone gets it backwards."""
+    assert revenue_per_hour_served(SHORT) > revenue_per_hour_served(HOUR)
+
+
+def test_doubling_the_package_does_not_change_the_rate():
+    """Two rewarded views for two hours is the hour package twice over —
+    which is exactly why granting per view rather than per package is safe."""
+    assert revenue_per_hour_served(DOUBLE) == revenue_per_hour_served(HOUR)
+
+
+def test_the_short_package_has_a_floor_price():
+    """Below it the short option subsidises the long one, and offering it
+    costs money rather than making it."""
+    floor = matching_ecpm(SHORT, HOUR)
+    assert 25 < floor < 35  # ~30 ₽
+
+    cheap = Package("too cheap", minutes=15, views=1, ecpm=floor - 10)
+    assert revenue_per_hour_served(cheap) < revenue_per_hour_served(HOUR)

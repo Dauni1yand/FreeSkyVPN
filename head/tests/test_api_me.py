@@ -67,17 +67,27 @@ def _authed(client, token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "X-Service-Token": TOKEN}
 
 
-def _watch_ad(client, token: str) -> dict:
-    """The full round trip a real client makes to buy an hour."""
-    ticket = client.post("/api/v1/me/ad/prepare", headers=_authed(client, token))
-    assert ticket.status_code == 200, ticket.text
-    done = client.post(
-        "/api/v1/me/ad/complete",
-        json={"nonce": ticket.json()["nonce"]},
-        headers=_authed(client, token),
+def _watch_ad(client, token: str, package: str = "hour") -> dict:
+    """The full round trip a real client makes to buy time.
+
+    Returns the last progress payload, whose `account` is the fresh state.
+    """
+    ticket = client.post(
+        "/api/v1/me/ad/prepare", json={"package": package}, headers=_authed(client, token)
     )
-    assert done.status_code == 200, done.text
-    return done.json()
+    assert ticket.status_code == 200, ticket.text
+    body = ticket.json()
+
+    last = None
+    for _ in range(body["views_required"]):
+        done = client.post(
+            "/api/v1/me/ad/complete",
+            json={"nonce": body["nonce"]},
+            headers=_authed(client, token),
+        )
+        assert done.status_code == 200, done.text
+        last = done.json()
+    return last
 
 
 # --- registration --------------------------------------------------------
@@ -206,23 +216,78 @@ def test_a_fresh_account_has_no_access(client):
 
     assert body["access_active"] is False
     assert body["access_seconds_remaining"] == 0
-    assert body["ad_reward_minutes"] == 60
 
 
 def test_a_completed_ad_buys_an_hour(client):
     token, _ = _register(client)
 
-    body = _watch_ad(client, token)
+    account = _watch_ad(client, token)["account"]
 
-    assert body["access_active"] is True
-    assert 3500 < body["access_seconds_remaining"] <= 3600
-    assert body["access_is_grace"] is False
+    assert account["access_active"] is True
+    assert 3500 < account["access_seconds_remaining"] <= 3600
+    assert account["access_is_grace"] is False
+
+
+def test_the_packages_are_offered_by_the_server(client):
+    """Served rather than compiled into the app, so the offer can change
+    without a store release."""
+    token, _ = _register(client)
+
+    packages = client.get("/api/v1/me", headers=_authed(client, token)).json()["packages"]
+
+    by_code = {p["code"]: p for p in packages}
+    assert by_code["short"]["total_minutes"] == 15
+    assert by_code["short"]["ad_kind"] == "interstitial"
+    assert by_code["hour"]["total_minutes"] == 60
+    assert by_code["double"]["total_minutes"] == 120
+    assert by_code["double"]["views"] == 2
+
+
+def test_the_short_package_buys_fifteen_minutes(client):
+    token, _ = _register(client)
+
+    account = _watch_ad(client, token, "short")["account"]
+
+    assert 800 < account["access_seconds_remaining"] <= 900
+
+
+def test_the_two_hour_package_reports_progress_between_videos(client):
+    """The app needs to say "1 of 2" rather than looking stuck."""
+    token, _ = _register(client)
+    ticket = client.post(
+        "/api/v1/me/ad/prepare", json={"package": "double"}, headers=_authed(client, token)
+    ).json()
+
+    first = client.post(
+        "/api/v1/me/ad/complete", json={"nonce": ticket["nonce"]},
+        headers=_authed(client, token),
+    ).json()
+
+    assert first["views_done"] == 1
+    assert first["views_required"] == 2
+    assert first["complete"] is False
+    # And the hour is already theirs, before the second video.
+    assert 3500 < first["account"]["access_seconds_remaining"] <= 3600
+
+
+def test_a_package_the_server_does_not_offer_is_refused(client):
+    """The reward is a server-side decision — a client able to name its own
+    would name a large one."""
+    token, _ = _register(client)
+
+    response = client.post(
+        "/api/v1/me/ad/prepare", json={"package": "one_year"}, headers=_authed(client, token)
+    )
+
+    assert response.status_code == 400
 
 
 def test_a_token_cannot_be_spent_twice_over_http(client):
     """Without this, one recorded call is an unlimited access generator."""
     token, _ = _register(client)
-    ticket = client.post("/api/v1/me/ad/prepare", headers=_authed(client, token)).json()
+    ticket = client.post(
+        "/api/v1/me/ad/prepare", json={"package": "hour"}, headers=_authed(client, token)
+    ).json()
     client.post(
         "/api/v1/me/ad/complete", json={"nonce": ticket["nonce"]},
         headers=_authed(client, token),
@@ -239,7 +304,9 @@ def test_a_token_cannot_be_spent_twice_over_http(client):
 def test_one_account_cannot_redeem_anothers_token(client):
     mine, _ = _register(client)
     theirs, _ = _register(client)
-    ticket = client.post("/api/v1/me/ad/prepare", headers=_authed(client, mine)).json()
+    ticket = client.post(
+        "/api/v1/me/ad/prepare", json={"package": "hour"}, headers=_authed(client, mine)
+    ).json()
 
     stolen = client.post(
         "/api/v1/me/ad/complete", json={"nonce": ticket["nonce"]},

@@ -57,15 +57,57 @@ data class Account(
      * class, so the user has a real reason for it feeling slower.
      */
     @SerialName("access_is_grace") val accessIsGrace: Boolean = false,
-    /** What the next completed ad will buy. */
-    @SerialName("ad_reward_minutes") val adRewardMinutes: Int = 60,
+    /**
+     * What the user can buy at the connect button.
+     *
+     * Served by the head rather than compiled in, so the offer can change
+     * without a store release — and so the client can never be the thing
+     * that decides what an ad is worth.
+     */
+    val packages: List<AccessPackage> = emptyList(),
 )
 
-/** The single-use token returned once a rewarded ad finishes. */
+/** One option in the duration picker. */
+@Serializable
+data class AccessPackage(
+    val code: String,
+    val label: String,
+    /**
+     * `rewarded` must be watched through and has a completion signal;
+     * `interstitial` is skippable and has none, anywhere — which is why it
+     * buys the least time.
+     */
+    @SerialName("ad_kind") val adKind: String,
+    val views: Int,
+    @SerialName("total_minutes") val totalMinutes: Int,
+) {
+    val isSkippable: Boolean get() = adKind == "interstitial"
+}
+
+/** The token covering one run through a package's ads. */
 @Serializable
 data class AdTicket(
     val nonce: String,
-    @SerialName("reward_minutes") val rewardMinutes: Int = 60,
+    @SerialName("package") val packageCode: String = "",
+    @SerialName("ad_kind") val adKind: String = "rewarded",
+    @SerialName("views_required") val viewsRequired: Int = 1,
+    @SerialName("minutes_per_view") val minutesPerView: Int = 60,
+)
+
+/**
+ * What one completed view bought.
+ *
+ * Time is credited per view rather than when the package finishes, so a
+ * user who watches the first of two ads and closes the app keeps the hour
+ * they earned. [complete] is false while another video is still owed.
+ */
+@Serializable
+data class AdProgress(
+    @SerialName("views_done") val viewsDone: Int,
+    @SerialName("views_required") val viewsRequired: Int,
+    @SerialName("minutes_granted") val minutesGranted: Int,
+    val complete: Boolean,
+    val account: Account,
 )
 
 @Serializable

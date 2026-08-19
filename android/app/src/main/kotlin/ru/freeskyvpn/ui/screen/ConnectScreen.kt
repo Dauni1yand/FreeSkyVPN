@@ -47,10 +47,11 @@ import ru.freeskyvpn.vpn.VpnStatus
  * escape hatches: "не работает" and the account.
  *
  * The button carries one more thing now. The service is funded entirely by
- * advertising, so with no time bought it reads "Смотреть рекламу" and the
- * ad happens as part of the tap rather than as a separate errand. Making
- * the user find a "watch ad" button, wait, and then find the connect button
- * again would be two chores where the product promises one.
+ * advertising, so with no time bought it opens the duration picker and the
+ * ads run as part of the same gesture — the user tapped connect, not "watch
+ * adverts, then connect". With time already bought it simply connects: they
+ * paid for those minutes once, and charging again for a reconnect would be
+ * charging twice for the same thing.
  */
 @Composable
 fun ConnectScreen(
@@ -96,10 +97,10 @@ fun ConnectScreen(
 
         Spacer(Modifier.weight(1f))
 
-        // Only once the hour is nearly up. Offering it at fifty minutes
+        // Only once the time is nearly up. Offering it at fifty minutes
         // would be asking for attention we have already been paid for.
         if (runningLow) {
-            PrimaryButton(text = "Продлить ещё на час", onClick = onExtend)
+            PrimaryButton(text = "Продлить", onClick = onExtend)
             Spacer(Modifier.height(Metrics.itemSpacing))
         }
 
@@ -199,7 +200,9 @@ private fun PowerButton(
                 // what tapping it actually does.
                 text = when {
                     connected -> "Вкл"
-                    !hasAccess -> "Смотреть\nрекламу"
+                    // Tapping here opens the duration picker, so the label
+                    // has to promise a choice rather than an advert.
+                    !hasAccess -> "Включить"
                     else -> "Выкл"
                 },
                 style = if (connected || hasAccess) MaterialTheme.typography.headlineLarge
@@ -226,7 +229,7 @@ private fun StatusLine(vpn: VpnSnapshot, hasAccess: Boolean, watchingAd: Boolean
         vpn.status == VpnStatus.Connected -> vpn.nodeCountry?.uppercase()?.let { "Сервер $it" }
         vpn.status == VpnStatus.Failed -> vpn.message
         vpn.status == VpnStatus.Disconnected && !hasAccess ->
-            "Ролик оплачивает час — подписки нет"
+            "Выберите время — его оплачивает реклама"
         vpn.status == VpnStatus.Disconnected -> "Нажмите, чтобы подключиться"
         else -> null
     }

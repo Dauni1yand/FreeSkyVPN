@@ -23,7 +23,9 @@ import ru.freeskyvpn.ui.MainViewModel
 import ru.freeskyvpn.ui.screen.AccountScreen
 import ru.freeskyvpn.ui.screen.AppEntry
 import ru.freeskyvpn.ui.screen.Banner
+import ru.freeskyvpn.ui.screen.AdOverlay
 import ru.freeskyvpn.ui.screen.ConnectScreen
+import ru.freeskyvpn.ui.screen.DurationPicker
 import ru.freeskyvpn.ui.screen.SettingsScreen
 import ru.freeskyvpn.ui.theme.FreeSkyTheme
 import ru.freeskyvpn.vpn.FreeSkyVpnService
@@ -58,6 +60,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // The countdown reaching zero stops the tunnel here rather than in
+        // the ViewModel: starting and stopping a VpnService needs the
+        // Activity's permission context.
+        vm.onExpired = { stopTunnel() }
 
         setContent {
             FreeSkyTheme {
@@ -138,6 +145,30 @@ class MainActivity : ComponentActivity() {
                             onRequestLinkCode = vm::requestLinkCode,
                             onBack = { screen = Screen.Connect },
                         )
+                    }
+
+                    // Above the screen, below the banners: an ad or a
+                    // picker is modal, and a screen still tappable behind
+                    // one is a screen that will be tapped.
+                    if (ui.choosingDuration) {
+                        DurationPicker(
+                            packages = ui.packages,
+                            onPick = { pkg ->
+                                vm.buyAccess(
+                                    activity = this@MainActivity,
+                                    pkg = pkg,
+                                    // Mid-session top-ups must not rebuild
+                                    // the tunnel and drop live connections.
+                                    andConnect = vpn.status != VpnStatus.Connected,
+                                    onReady = ::requestVpnPermission,
+                                )
+                            },
+                            onDismiss = vm::dismissDurationPicker,
+                        )
+                    }
+
+                    if (ui.watchingAd) {
+                        AdOverlay(progress = ui.adProgress)
                     }
 
                     ui.error?.let { message ->

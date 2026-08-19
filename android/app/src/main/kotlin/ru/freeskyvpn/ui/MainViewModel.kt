@@ -10,17 +10,23 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import ru.freeskyvpn.ads.AdGateway
-import ru.freeskyvpn.core.Account
 import ru.freeskyvpn.core.AccessCountdown
+import ru.freeskyvpn.core.AccessPackage
+import ru.freeskyvpn.core.Account
 import ru.freeskyvpn.core.LinkCode
+import ru.freeskyvpn.core.PackageOffer
 import ru.freeskyvpn.data.HeadApi
 import ru.freeskyvpn.data.Repository
 import ru.freeskyvpn.vpn.VpnStateHolder
 
 data class UiState(
     val busy: Boolean = false,
-    /** True while a rewarded ad is on screen or being fetched. */
+    /** True while an ad is on screen or being fetched. */
     val watchingAd: Boolean = false,
+    /** Which video of the package is playing, for "2 из 2". */
+    val adProgress: Pair<Int, Int>? = null,
+    /** True while the duration picker is up. */
+    val choosingDuration: Boolean = false,
     val account: Account? = null,
     val linkCode: LinkCode? = null,
     /** Seconds of access left, counted down locally between /me calls. */
@@ -33,6 +39,7 @@ data class UiState(
     val hasAccess: Boolean get() = secondsRemaining > 0
     val runningLow: Boolean get() = AccessCountdown.shouldWarn(secondsRemaining)
     val remainingLabel: String get() = AccessCountdown.format(secondsRemaining)
+    val packages: List<AccessPackage> get() = PackageOffer.offered(account?.packages.orEmpty())
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -68,17 +75,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ads.preload()
     }
 
-    /** Keeps the countdown honest without asking the server every second. */
+    /**
+     * Keeps the countdown honest without asking the server every second,
+     * and stops the tunnel the moment it reaches zero.
+     *
+     * The disconnect here is courtesy, not enforcement. A modified build
+     * simply would not do it — what actually ends the session is the head
+     * removing the client's UUID from the node's config
+     * (`services/enforcement.py`). Doing it locally too means the user sees
+     * the VPN stop when their time runs out rather than at some point in
+     * the next minute, which is the difference between a product that
+     * behaves as described and one that seems to lag.
+     */
     private suspend fun tickWhileRunning() {
         while (true) {
             delay(1_000)
             if (serverSeconds <= 0) continue
-            val left = AccessCountdown.remaining(serverSeconds, SystemClock.elapsedRealtime() - receivedAtMillis)
-            if (left != _ui.value.secondsRemaining) {
-                _ui.value = _ui.value.copy(secondsRemaining = left)
+
+            val left = AccessCountdown.remaining(
+                serverSeconds, SystemClock.elapsedRealtime() - receivedAtMillis
+            )
+            if (left == _ui.value.secondsRemaining) continue
+            _ui.value = _ui.value.copy(secondsRemaining = left)
+
+            if (left == 0) {
+                serverSeconds = 0
+                onExpired?.invoke()
+                _ui.value = _ui.value.copy(
+                    notice = "Время закончилось, VPN отключён. " +
+                        "Выберите, на сколько включить снова."
+                )
             }
         }
     }
+
+    /**
+     * Called when the bought time runs out, so the activity can stop the
+     * tunnel. A callback rather than the ViewModel touching the service
+     * directly: starting and stopping a VpnService needs the Activity's
+     * permission context, which a ViewModel has no business holding.
+     */
+    var onExpired: (() -> Unit)? = null
 
     fun loadAccount() = launchGuarded {
         applyAccount(repo.account())
@@ -96,21 +133,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * The connect button.
      *
-     * Access is checked first because the whole product is gated on it: no
-     * watched ad, no hour, no tunnel. When there is time left, connecting
-     * does not touch the ad path at all — a reconnect mid-hour must not
-     * cost the user another video.
+     * Time already bought reconnects straight away, with no ad and no
+     * picker. That is the point of selling time rather than sessions:
+     * someone who turned the VPN off with forty minutes left has already
+     * paid for those forty minutes, and charging them again would be taking
+     * payment twice for the same thing.
+     *
+     * With nothing left, the picker opens and the ads run as part of the
+     * same gesture — the user tapped connect, not "watch adverts".
      */
-    fun connect(activity: Activity, onReady: () -> Unit) {
+    fun connect(onReady: () -> Unit) {
         if (_ui.value.hasAccess) {
             fetchConfigAndStart(onReady)
         } else {
-            watchAdThen(activity) { fetchConfigAndStart(onReady) }
+            _ui.value = _ui.value.copy(choosingDuration = true, error = null)
         }
     }
 
-    /** Buy the next hour without disconnecting — offered as time runs low. */
-    fun extendAccess(activity: Activity) = watchAdThen(activity) {}
+    /** Open the picker deliberately — used to top up before time runs out. */
+    fun chooseDuration() {
+        _ui.value = _ui.value.copy(choosingDuration = true, error = null)
+    }
+
+    fun dismissDurationPicker() {
+        _ui.value = _ui.value.copy(choosingDuration = false)
+    }
+
+    /**
+     * A duration was picked: run its ads, then connect if we are not already.
+     *
+     * [andConnect] is false when topping up mid-session — the tunnel is
+     * already running and rebuilding it would drop the user's connections
+     * for no reason.
+     */
+    fun buyAccess(activity: Activity, pkg: AccessPackage, andConnect: Boolean, onReady: () -> Unit) {
+        _ui.value = _ui.value.copy(choosingDuration = false)
+        watchAdsThen(activity, pkg) { if (andConnect) fetchConfigAndStart(onReady) }
+    }
 
     private fun fetchConfigAndStart(onReady: () -> Unit) = launchGuarded {
         if (repo.storage.lastVlessUrl.isNullOrBlank()) {
@@ -121,7 +180,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Show an ad, claim the hour, then run [next].
+     * Run a package's ads one after another, crediting each as it finishes.
+     *
+     * Each view is claimed the moment it ends rather than at the end of the
+     * package, because the server grants per view: if the user closes the
+     * app between two videos they keep the hour they earned. Batching the
+     * claims would mean taking a view and giving nothing for it.
      *
      * The failure branch is the one that matters. If no ad can be shown —
      * no fill, no network, no SDK — the user is not left unable to connect:
@@ -129,26 +193,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Treating "the ad network is down" as "the VPN is down" would hand our
      * availability to somebody else's.
      */
-    private fun watchAdThen(activity: Activity, next: () -> Unit) {
+    private fun watchAdsThen(activity: Activity, pkg: AccessPackage, next: () -> Unit) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(watchingAd = true, error = null, notice = null)
+            val kind =
+                if (pkg.isSkippable) AdGateway.Kind.Interstitial else AdGateway.Kind.Rewarded
+
             try {
-                val nonce = repo.prepareAd()
+                val ticket = repo.prepareAd(pkg.code)
+                var watched = 0
 
-                when (val outcome = ads.show(activity)) {
-                    is AdGateway.Outcome.Rewarded -> {
-                        applyAccount(repo.completeAd(nonce))
-                        next()
+                while (watched < ticket.viewsRequired) {
+                    _ui.value = _ui.value.copy(adProgress = (watched + 1) to ticket.viewsRequired)
+
+                    when (val outcome = ads.show(activity, kind)) {
+                        is AdGateway.Outcome.Rewarded -> {
+                            val progress = repo.completeAd(ticket.nonce)
+                            applyAccount(progress.account)
+                            watched = progress.viewsDone
+                        }
+
+                        is AdGateway.Outcome.Skipped -> {
+                            // Only a rewarded ad can be skipped short; the
+                            // time already earned in this package stays.
+                            _ui.value = _ui.value.copy(
+                                error = if (watched == 0) {
+                                    "Ролик нужно досмотреть до конца — это и оплачивает сервер."
+                                } else {
+                                    "Второй ролик не досмотрен. Первый час уже начислен."
+                                }
+                            )
+                            break
+                        }
+
+                        is AdGateway.Outcome.Unavailable -> {
+                            if (watched == 0) takeFallback(outcome.reason, next)
+                            return@launch
+                        }
                     }
-
-                    is AdGateway.Outcome.Skipped -> {
-                        _ui.value = _ui.value.copy(
-                            error = "Ролик нужно досмотреть до конца — это и оплачивает сервер."
-                        )
-                    }
-
-                    is AdGateway.Outcome.Unavailable -> takeFallback(outcome.reason, next)
                 }
+
+                if (watched > 0) next()
             } catch (e: HeadApi.HttpError) {
                 _ui.value = _ui.value.copy(error = messageFor(e))
             } catch (e: Exception) {
@@ -156,7 +241,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     error = "Нет связи с сервером. Проверьте интернет и попробуйте ещё раз."
                 )
             } finally {
-                _ui.value = _ui.value.copy(watchingAd = false)
+                _ui.value = _ui.value.copy(watchingAd = false, adProgress = null)
                 ads.preload()
             }
         }

@@ -160,3 +160,40 @@ async def xray_update_apply_loop() -> None:
     while True:
         await asyncio.to_thread(run_xray_update_apply)
         await asyncio.sleep(interval)
+
+
+def run_access_expiry() -> None:
+    """Disconnect everyone whose bought time has run out.
+
+    The only thing in the system that actually ends a session. Everything
+    else — the 402 on connect, the move to the grace class, the app's own
+    countdown — gates or presents; this is what removes the user's UUID
+    from the node and drops the tunnel.
+
+    Runs often, because the gap between "time is up" and "the VPN stops" is
+    free service. A minute of slack is a rounding error; an hour would be
+    a sixth of what the ad paid for.
+    """
+    from app.services.enforcement import sweep_expired
+
+    with SessionLocal() as db:
+        try:
+            outcome = sweep_expired(db)
+            db.commit()
+            if outcome.disconnected or outcome.failed_nodes:
+                logger.info(
+                    "expiry sweep: %d disconnected across %d node(s), %d node(s) unreachable",
+                    outcome.disconnected,
+                    outcome.nodes_pushed,
+                    outcome.failed_nodes,
+                )
+        except Exception:
+            db.rollback()
+            logger.exception("access expiry sweep failed")
+
+
+async def access_expiry_loop() -> None:
+    interval = get_settings().access_expiry_interval_seconds
+    while True:
+        await asyncio.to_thread(run_access_expiry)
+        await asyncio.sleep(interval)

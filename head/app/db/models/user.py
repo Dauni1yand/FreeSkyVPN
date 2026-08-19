@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
@@ -142,7 +143,7 @@ class LinkCode(Base):
 
 
 class AdNonce(Base):
-    """A single-use token tying one rewarded view to one grant of access.
+    """A token covering one run through an access package's ads.
 
     Without it, a single recorded HTTP call would be an unlimited access
     generator: replay "I watched an ad" forever and never watch one. The
@@ -160,6 +161,12 @@ class AdNonce(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
     nonce: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # Which package this run is for. Stored server-side because the server
+    # decides what a view is worth — a client that could name its own
+    # reward would name a large one.
+    package: Mapped[str] = mapped_column(String(16), default="hour")
+    views_required: Mapped[int] = mapped_column(Integer, default=1)
+    views_done: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

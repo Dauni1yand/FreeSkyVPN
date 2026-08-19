@@ -19,6 +19,7 @@ from app.api.routers import (
 )
 from app.config import get_settings
 from app.services.scheduler import (
+    access_expiry_loop,
     sni_maintenance_loop,
     tier_reconciliation_loop,
     xray_update_apply_loop,
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Background upkeep: SNI freshness, free/paid placement, Xray updates.
+    """Background upkeep: SNI freshness, placement, expiry, Xray updates.
 
     All of them live in app/services/scheduler.py.
 
@@ -46,6 +47,10 @@ async def lifespan(_app: FastAPI):
             logger.info("SNI maintenance loop started")
         tasks.append(asyncio.create_task(tier_reconciliation_loop()))
         logger.info("tier reconciliation loop started")
+        # The one loop that actually ends sessions. Without it a single
+        # watched ad buys an unlimited tunnel.
+        tasks.append(asyncio.create_task(access_expiry_loop()))
+        logger.info("access expiry loop started")
         if settings.xray_update_check_enabled:
             tasks.append(asyncio.create_task(xray_update_check_loop()))
             logger.info("Xray update check loop started")
