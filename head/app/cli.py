@@ -3,6 +3,7 @@
     python -m app.cli create-admin <username> [password]
     python -m app.cli generate-key
     python -m app.cli add-node <host> <country> <ssh-password> [опции]
+    python -m app.cli check-node <host> [--ssh-port N]
     python -m app.cli list-nodes
     python -m app.cli egress-url
 
@@ -21,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import secrets
+import socket
 import sys
+import time
 
 from sqlalchemy import select
 
@@ -107,6 +110,61 @@ def add_node(argv: list[str]) -> int:
     return 0
 
 
+def check_node(argv: list[str]) -> int:
+    """Can the head open a TCP connection to a node's SSH port?
+
+    Run before add-node, or after it fails. Provisioning cannot start until
+    this works, and the answer separates the two situations that look
+    identical from inside a failed install: nothing came back at all, or
+    something came back and said no.
+    """
+    parser = argparse.ArgumentParser(prog="check-node", description=check_node.__doc__)
+    parser.add_argument("host")
+    parser.add_argument("--ssh-port", type=int, default=22)
+    parser.add_argument("--timeout", type=float, default=10.0)
+    args = parser.parse_args(argv)
+
+    print(f"стучусь в {args.host}:{args.ssh_port} с головы…", flush=True)
+    started = time.monotonic()
+    try:
+        with socket.create_connection((args.host, args.ssh_port), timeout=args.timeout) as sock:
+            sock.settimeout(args.timeout)
+            # sshd представляется первым. Баннер отличает «порт открыт» от
+            # «порт открыт, но за ним не ssh» — второе встречается, когда
+            # хостер вешает на 22 свою заглушку.
+            banner = sock.recv(128).decode(errors="replace").strip()
+    except TimeoutError:
+        print(
+            f"\nне отвечает за {args.timeout:g} с — пакеты отбрасываются молча.\n"
+            "До sshd дело не дошло, пароль ни при чём. Проверьте:\n"
+            "  1. фаервол хостера ноды — в панели, а не на самой ноде;\n"
+            "  2. тот ли порт: некоторые хостеры выдают ssh не на 22 (--ssh-port);\n"
+            "  3. жив ли сервер вообще — и не закрыт ли исходящий 22 у головы:\n"
+            "     docker compose exec head python -m app.cli check-node github.com",
+            file=sys.stderr,
+        )
+        return 1
+    except ConnectionRefusedError:
+        print(
+            f"\nсоединение отклонено — хост жив, но на {args.ssh_port} никто не слушает.\n"
+            "Либо sshd на другом порту (--ssh-port), либо он не запущен.",
+            file=sys.stderr,
+        )
+        return 1
+    except OSError as exc:
+        print(f"\nне достучаться: {exc}", file=sys.stderr)
+        return 1
+
+    elapsed = (time.monotonic() - started) * 1000
+    print(f"порт открыт, {elapsed:.0f} мс")
+    if banner.startswith("SSH-"):
+        print(f"за ним ssh: {banner}")
+        print("\nСеть в порядке — можно запускать add-node.")
+        return 0
+    print(f"но приветствие не похоже на ssh: {banner[:60]!r}", file=sys.stderr)
+    return 1
+
+
 def list_nodes(_argv: list[str]) -> int:
     with SessionLocal() as db:
         nodes = db.scalars(select(Node).order_by(Node.country, Node.host)).all()
@@ -149,6 +207,7 @@ COMMANDS = {
     "create-admin": create_admin,
     "generate-key": generate_key,
     "add-node": add_node,
+    "check-node": check_node,
     "list-nodes": list_nodes,
     "egress-url": egress_url,
 }

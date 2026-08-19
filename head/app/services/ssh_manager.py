@@ -18,11 +18,13 @@ from __future__ import annotations
 import io
 import logging
 import secrets
+import socket
 import string
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 import paramiko
+from paramiko.ssh_exception import NoValidConnectionsError
 
 from app.db.models.node import Node
 from app.services import crypto
@@ -94,12 +96,56 @@ def connect(node: Node, *, password: str | None = None, timeout: float = 20.0):
             look_for_keys=False,
         )
     except Exception as exc:
-        raise SshError(f"cannot reach {node.ssh_user}@{node.host}:{node.ssh_port}: {exc}") from exc
+        raise SshError(_why_unreachable(node, exc)) from exc
 
     try:
         yield client
     finally:
         client.close()
+
+
+
+def _why_unreachable(node: Node, exc: Exception) -> str:
+    """Say which side of the connection failed, not just that it did.
+
+    All three common failures used to read as one line ending in whatever
+    text the exception happened to carry, and they need opposite responses:
+    a dropped packet is a firewall, a refused one is the wrong port, and a
+    rejected password is the node's sshd config. Guessing between them
+    costs an afternoon.
+
+    paramiko decides the shape here: it swallows ECONNREFUSED and
+    EHOSTUNREACH into NoValidConnectionsError and re-raises everything else
+    untouched, so a timeout arrives as a bare TimeoutError.
+    """
+    where = f"{node.ssh_user}@{node.host}:{node.ssh_port}"
+
+    if isinstance(exc, paramiko.AuthenticationException):
+        return (
+            f"{where} ответил, но не принял вход: {exc}. "
+            "Обычно это неверный пароль, либо на ноде запрещён вход root по "
+            "паролю — в /etc/ssh/sshd_config нужны PermitRootLogin yes и "
+            "PasswordAuthentication yes"
+        )
+
+    if isinstance(exc, socket.gaierror):
+        return f"имя {node.host} не разрешается: {exc}"
+
+    if isinstance(exc, NoValidConnectionsError):
+        return (
+            f"{where} отклонил соединение. Порт закрыт, но хост жив: "
+            "либо sshd слушает другой порт (тогда --ssh-port), либо он не запущен"
+        )
+
+    if isinstance(exc, TimeoutError):
+        return (
+            f"{where} не отвечает: пакеты отбрасываются молча. "
+            "Это не пароль — до sshd дело не дошло. Три обычные причины: "
+            "фаервол хостера (проверьте панель), другой порт SSH, "
+            "или исходящий 22 закрыт у самой головы"
+        )
+
+    return f"cannot reach {where}: {exc}"
 
 
 def run(client: paramiko.SSHClient, command: str, *, stdin_data: str | None = None) -> CommandResult:
