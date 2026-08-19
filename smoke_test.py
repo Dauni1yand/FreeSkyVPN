@@ -13,13 +13,31 @@ Those are exactly the things that pass in CI and still break on a server.
 Add --admin-user/--admin-password to check the panel too. Nothing here
 writes to a node; the connect check is skipped when no node is registered
 yet, and reported as skipped rather than passed.
+
+--deep adds the checks that cost time and prove the parts nothing else
+does: that a config actually carries traffic out through the node, that a
+watched ad turns into the right number of minutes, that time already paid
+for does not ask for another ad, and that Telegram is reachable by whatever
+route this deployment is configured to use. Run it from inside the head
+container, where xray and the settings already are:
+
+    docker compose exec head python smoke_test.py --deep \
+        --token "$HEAD_SECRET_KEY" --admin-token "$ADMIN_API_TOKEN"
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import json
+import os
+import socket
+import subprocess
 import sys
+import tempfile
+import time
 import uuid
+from contextlib import closing
 
 import httpx
 
@@ -46,6 +64,245 @@ def check(name: str, fn) -> object:
     return value
 
 
+# --- deep checks ------------------------------------------------------------
+#
+# Everything above answers "is the deployment wired up". These answer "does
+# it do the thing", which is a different question and the one that actually
+# matters: a stack can pass every check above and still hand out configs
+# that carry no traffic.
+
+
+def _free_port() -> int:
+    with closing(socket.socket()) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _load_egress_module():
+    """Reuse the proxy container's config builder rather than a second copy.
+
+    It already turns a vless:// link into an Xray client config, and it is
+    covered by head/tests/test_egress_config.py. A private copy here would
+    be the same code with no tests and its own drift.
+    """
+    for candidate in ("/provisioning/egress.py", "provisioning/egress.py"):
+        if os.path.exists(candidate):
+            spec = importlib.util.spec_from_file_location("egress", candidate)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
+class _Tunnel:
+    """A local xray client speaking the config a user would be handed."""
+
+    def __init__(self, vless_url: str):
+        self._url = vless_url
+        self.port = _free_port()
+        self._process: subprocess.Popen | None = None
+        self._config: str | None = None
+
+    def __enter__(self):
+        egress = _load_egress_module()
+        if egress is None:
+            raise RuntimeError("provisioning/egress.py not found — run this inside the head container")
+
+        xray = os.environ.get("XRAY_CLIENT_BINARY_PATH", "/usr/local/bin/xray")
+        if not os.access(xray, os.X_OK):
+            raise RuntimeError(f"no xray at {xray}")
+
+        config = egress.build_config(egress.parse_vless(self._url), self.port)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            json.dump(config, handle)
+            self._config = handle.name
+
+        self._process = subprocess.Popen(
+            [xray, "run", "-c", self._config],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        # Wait for the inbound rather than sleeping a fixed amount: Reality
+        # handshakes vary, and a fixed sleep is either slow or flaky.
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if self._process.poll() is not None:
+                err = (self._process.stderr.read() or b"").decode()[-300:]
+                raise RuntimeError(f"xray exited immediately: {err}")
+            with closing(socket.socket()) as probe:
+                probe.settimeout(0.3)
+                if probe.connect_ex(("127.0.0.1", self.port)) == 0:
+                    return self
+            time.sleep(0.3)
+        raise RuntimeError("xray did not open its socks port within 15s")
+
+    def __exit__(self, *_exc):
+        if self._process is not None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+        if self._config:
+            os.unlink(self._config)
+
+
+def _public_ip(proxy: str | None) -> str:
+    with httpx.Client(proxy=proxy, timeout=20.0) as client:
+        return client.get("https://api.ipify.org").text.strip()
+
+
+
+def _deep_checks(api, args, device_token, issued_url) -> None:
+    """The checks that cost seconds and answer the question that matters."""
+
+    # --- traffic actually leaves through the node --------------------------
+    #
+    # Everything else can pass while this fails: the head hands out a link,
+    # the node reports healthy, and not one packet crosses. Nothing short of
+    # dialling the config and watching an address change proves otherwise.
+
+    def tunnel_carries_traffic():
+        if not issued_url:
+            return (SKIP, "no config was issued, nothing to dial")
+
+        try:
+            direct_ip = _public_ip(None)
+        except Exception:
+            direct_ip = None  # a head behind a strict egress cannot self-locate
+
+        with _Tunnel(issued_url) as tunnel:
+            through_ip = _public_ip(f"socks5://127.0.0.1:{tunnel.port}")
+
+        assert through_ip, "no address came back through the tunnel"
+        if direct_ip and through_ip == direct_ip:
+            return (
+                FAIL,
+                f"traffic left from the head's own address ({through_ip}) — "
+                "the tunnel is not carrying it",
+            )
+        if direct_ip:
+            return f"exits at {through_ip}, head is {direct_ip}"
+        return f"exits at {through_ip} (head could not check its own address)"
+
+    check("the tunnel carries traffic", tunnel_carries_traffic)
+
+    # --- an ad turns into the right number of minutes ----------------------
+
+    def ads_pay_out_per_view():
+        if not device_token:
+            return (SKIP, "no device token")
+        auth = {"Authorization": f"Bearer {device_token}"}
+
+        ticket = api.post("/api/v1/me/ad/prepare", json={"package": "double"}, headers=auth)
+        assert ticket.status_code == 200, f"prepare: {ticket.status_code} {ticket.text[:140]}"
+        ticket = ticket.json()
+        assert ticket["views_required"] == 2, f"the two-hour package wants {ticket['views_required']} views"
+
+        before = api.get("/api/v1/me", headers=auth).json()["access_seconds_remaining"]
+
+        granted = []
+        for view in range(ticket["views_required"]):
+            done = api.post(
+                "/api/v1/me/ad/complete", json={"nonce": ticket["nonce"]}, headers=auth
+            )
+            assert done.status_code == 200, f"view {view + 1}: {done.status_code} {done.text[:140]}"
+            body = done.json()
+            granted.append(body["minutes_granted"])
+            # Credited per view, not per package: someone who watches one of
+            # two videos has earned one hour, and owing them nothing until
+            # the second is how you teach people to stop watching.
+            assert body["complete"] == (view + 1 == ticket["views_required"])
+
+        after = api.get("/api/v1/me", headers=auth).json()["access_seconds_remaining"]
+        gained = (after - before) // 60
+        expected = ticket["minutes_per_view"] * ticket["views_required"]
+        assert gained >= expected - 1, f"watched {len(granted)} videos, got {gained} min, expected {expected}"
+        return f"{len(granted)} videos → {gained} min"
+
+    check("a watched ad pays out per view", ads_pay_out_per_view)
+
+    # --- paid-for time is not charged twice --------------------------------
+
+    def reconnect_costs_nothing():
+        if not device_token:
+            return (SKIP, "no device token")
+        auth = {"Authorization": f"Bearer {device_token}"}
+        first = api.post("/api/v1/me/connect", json={}, headers=auth)
+        if first.status_code == 503:
+            return (SKIP, "no capacity to hand out a config")
+        assert first.status_code == 200, f"{first.status_code}: {first.text[:140]}"
+        second = api.post("/api/v1/me/connect", json={}, headers=auth)
+        assert second.status_code == 200, (
+            f"reconnect asked for another ad ({second.status_code}) — "
+            "time already bought must not be charged twice"
+        )
+        return "reconnects while time remains, no ad"
+
+    check("paid time reconnects free", reconnect_costs_nothing)
+
+    # --- the head can reach Telegram at all --------------------------------
+
+    def telegram_is_reachable():
+        try:
+            from app.config import get_settings
+        except Exception:
+            return (SKIP, "run inside the head container to check this")
+
+        settings = get_settings()
+        if not settings.telegram_bot_token:
+            return (SKIP, "no bot token configured")
+
+        proxy = settings.telegram_proxy_url or None
+        try:
+            with httpx.Client(proxy=proxy, timeout=20.0) as client:
+                response = client.get(
+                    f"https://api.telegram.org/bot{settings.telegram_bot_token}/getMe"
+                )
+        except Exception as exc:
+            route = f"through {proxy}" if proxy else "directly (no TELEGRAM_PROXY_URL set)"
+            return (
+                FAIL,
+                f"cannot reach Telegram {route}: {type(exc).__name__}. "
+                "In Russia this needs the egress container — see DEPLOY.md 10а",
+            )
+
+        if response.status_code != 200:
+            detail = response.json().get("description", response.text[:80])
+            return (FAIL, f"Telegram refused the token: {detail}")
+        route = f"via {proxy}" if proxy else "directly"
+        return f"@{response.json()['result']['username']} {route}"
+
+    check("Telegram is reachable", telegram_is_reachable)
+
+    # --- the schema is where the code expects it ---------------------------
+
+    def migrations_are_current():
+        try:
+            from alembic.config import Config
+            from alembic.runtime.migration import MigrationContext
+            from alembic.script import ScriptDirectory
+
+            from app.db.session import engine
+        except Exception:
+            return (SKIP, "run inside the head container to check this")
+
+        for ini in ("/app/alembic.ini", "alembic.ini"):
+            if os.path.exists(ini):
+                script = ScriptDirectory.from_config(Config(ini))
+                break
+        else:
+            return (SKIP, "alembic.ini not found")
+
+        with engine.connect() as connection:
+            current = MigrationContext.configure(connection).get_current_revision()
+        expected = script.get_current_head()
+        assert current == expected, f"database at {current}, code expects {expected}"
+        return f"at {current}"
+
+    check("migrations are current", migrations_are_current)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8000")
@@ -57,6 +314,11 @@ def main() -> int:
     )
     parser.add_argument("--admin-user")
     parser.add_argument("--admin-password")
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="also prove traffic flows, ads pay out, and Telegram is reachable",
+    )
     args = parser.parse_args()
 
     api = httpx.Client(
@@ -207,7 +469,10 @@ def main() -> int:
 
         check("grant access without an ad", grant)
 
+        issued_url = None
+
         def connect():
+            nonlocal issued_url
             if not nodes or not any(n["status"] == "active" for n in nodes):
                 return (SKIP, "no active node registered yet — add one in the admin panel first")
             response = api.post("/api/v1/connect", json={"user_id": user_id})
@@ -216,9 +481,14 @@ def main() -> int:
             assert response.status_code == 200, f"{response.status_code}: {response.text[:200]}"
             url = response.json()["vless_url"]
             assert url.startswith("vless://"), f"unexpected config: {url[:60]}"
+            issued_url = url
             return f"got a config on {response.json()['node_country']}"
 
         check("issue a VPN config", connect)
+
+    if args.deep:
+        print("\ndeep")
+        _deep_checks(api, args, device_token, issued_url if user_id else None)
 
     if args.admin_user and args.admin_password:
         print("\nadmin panel")
