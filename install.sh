@@ -159,21 +159,51 @@ if [[ $KEEP_ENV == false ]]; then
     echo
 
     BOT_TOKEN=""
+    TG_REACHABLE=true
     while [[ -z $BOT_TOKEN ]]; do
         ask "Токен Telegram-бота" BOT_TOKEN
+        # Вставка из Windows приносит с собой \r, он уходит прямо в URL и
+        # делает верный токен неверным. Пробелы по краям — то же самое.
+        BOT_TOKEN="${BOT_TOKEN//[$'\r\n\t ']/}"
         [[ -z $BOT_TOKEN ]] && { fail "без токена бот работать не будет"; continue; }
 
-        # Verified against Telegram rather than pattern-matched: a typo here
-        # otherwise surfaces much later as a bot that silently does nothing.
-        BOT_NAME=$(curl -fsS --max-time 15 "https://api.telegram.org/bot${BOT_TOKEN}/getMe" 2>/dev/null \
-                   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["result"]["username"] if d.get("ok") else "")' 2>/dev/null)
-        if [[ -n $BOT_NAME ]]; then
+        # Проверяется у Telegram, а не по маске: опечатка иначе всплывёт
+        # много позже как молчащий бот.
+        #
+        # «Telegram отказал» и «до Telegram не достучались» разводятся
+        # намеренно. Раньше и то и другое печаталось как «токен не принят»,
+        # и человек с верным токеном перебирал его снова и снова, хотя
+        # чинить надо было сеть.
+        TG_BODY=$(mktemp); TG_ERR=$(mktemp)
+        HTTP_CODE=$(curl -sS --max-time 15 -o "$TG_BODY" -w '%{http_code}' \
+                    "https://api.telegram.org/bot${BOT_TOKEN}/getMe" 2>"$TG_ERR")
+        CURL_RC=$?
+
+        if [[ $CURL_RC -ne 0 ]]; then
+            TG_REACHABLE=false
+            fail "не удалось связаться с api.telegram.org"
+            sed 's/^/      /' "$TG_ERR"
+            info "Токен здесь, скорее всего, ни при чём: сервер не достучался"
+            info "до Telegram. Проверьте с этого же сервера:"
+            info "    curl -sS -o /dev/null -w '%{http_code}\\n' https://api.telegram.org"
+            info "Частое: нет DNS, закрыт исходящий 443, нужен прокси у хостера."
+            warn "Пока сервер не видит Telegram, бот работать не будет."
+            if confirm "Всё равно продолжить, проверив токен позже?"; then
+                ok "токен принят без проверки"
+            else
+                BOT_TOKEN=""
+            fi
+        elif BOT_NAME=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["result"]["username"] if d.get("ok") else "")' "$TG_BODY" 2>/dev/null) \
+             && [[ -n $BOT_NAME ]]; then
             ok "бот @$BOT_NAME"
         else
-            fail "Telegram не принял этот токен"
-            info "Проверьте, что скопировали строку целиком, без пробелов."
+            TG_REASON=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("description",""))' "$TG_BODY" 2>/dev/null)
+            fail "Telegram отказал (HTTP $HTTP_CODE)${TG_REASON:+: $TG_REASON}"
+            info "Это уже про сам токен: неверен или отозван."
+            info "Действующий покажет @BotFather командой /mytoken."
             BOT_TOKEN=""
         fi
+        rm -f "$TG_BODY" "$TG_ERR"
     done
 
     echo
@@ -182,7 +212,9 @@ if [[ $KEEP_ENV == false ]]; then
     echo
     ask "Ваш Telegram id (Enter — пропустить)" ADMIN_CHAT_ID
 
-    if [[ -n $ADMIN_CHAT_ID ]]; then
+    if [[ -n $ADMIN_CHAT_ID ]] && [[ $TG_REACHABLE == false ]]; then
+        warn "проверочное сообщение не отправляю — сервер не видит Telegram"
+    elif [[ -n $ADMIN_CHAT_ID ]]; then
         if curl -fsS --max-time 15 -X POST \
              "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
              -d "chat_id=${ADMIN_CHAT_ID}" \
