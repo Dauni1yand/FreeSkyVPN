@@ -88,14 +88,28 @@ services:
       dockerfile: head/Dockerfile
     restart: always
     profiles: ["egress"]
+    depends_on:
+      - head
     command: ["python", "/provisioning/egress.py"]
     environment:
+      # Where it asks for a config, and re-asks when a node stops carrying
+      # traffic. This is what makes the tunnel survive one node being
+      # blocked — see provisioning/egress.py.
+      HEAD_API_URL: http://head:8000
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}
       # Not `:?` — compose interpolates every service whether its profile is
       # active or not, so a required variable here would stop the stack for
       # everyone who never asked for this container. The script reports a
       # missing value itself, where the person who enabled it will see it.
+      #
+      # Setting this pins the proxy to one server and turns switching off.
+      # Worth it only for a server outside the fleet, so that an alert about
+      # the fleet does not travel through it.
       EGRESS_VLESS_URL: ${EGRESS_VLESS_URL:-}
       EGRESS_SOCKS_PORT: ${EGRESS_SOCKS_PORT:-1080}
+      EGRESS_PROBE_URL: ${EGRESS_PROBE_URL:-https://api.telegram.org}
+      EGRESS_PROBE_SECONDS: ${EGRESS_PROBE_SECONDS:-60}
+      EGRESS_PROBE_FAILURES: ${EGRESS_PROBE_FAILURES:-3}
     # No ports published on purpose. An open SOCKS proxy reachable from the
     # internet is found by scanners within hours and becomes somebody
     # else's relay; the compose network is all that needs to see it.

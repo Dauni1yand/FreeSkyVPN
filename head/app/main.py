@@ -9,6 +9,7 @@ from app.admin.deps import NotLoggedIn
 from app.admin.router import router as admin_router
 from app.api.routers import (
     connect,
+    egress,
     health,
     me,
     nodes,
@@ -72,6 +73,7 @@ app.include_router(me.router)
 app.include_router(me.admin_router)
 app.include_router(nodes.router)
 app.include_router(connect.router)
+app.include_router(egress.router)
 app.include_router(pushes.router)
 app.include_router(sni.router)
 app.include_router(xray_updates.router)
