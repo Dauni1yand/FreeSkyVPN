@@ -78,6 +78,29 @@ object ApiEndpoints {
     fun parse(configured: String): List<String> =
         configured.split(',').mapNotNull(::normalise)
 
+    /** The bare hostname of an address, for routing rules. */
+    fun hostOf(url: String): String? =
+        normalise(url)
+            ?.substringAfter("://")
+            ?.substringBefore('/')
+            ?.substringBefore(':')
+            ?.takeIf { it.isNotEmpty() }
+
+    /**
+     * Every hostname the head might be reached at.
+     *
+     * Handed to the Xray config so those names are routed *through* the
+     * tunnel rather than around it. That is not a detail — it is what makes
+     * a blocked control-plane domain recover on its own.
+     *
+     * A head on a `.ru` domain matches the split tunnel's `domain:ru` rule
+     * and is sent direct, so a user whose ISP blocks that name cannot reach
+     * it even while their VPN is up. Forcing it through the proxy means the
+     * VPN they already have fixes the problem for them.
+     */
+    fun proxiedHosts(configured: List<String>): List<String> =
+        configured.mapNotNull(::hostOf).distinct()
+
     private fun isPrivateHost(url: String): Boolean {
         val host = url.removePrefix("http://").substringBefore('/').substringBefore(':')
         if (host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2") return true

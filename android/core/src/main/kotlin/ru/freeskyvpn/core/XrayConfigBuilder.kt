@@ -48,28 +48,45 @@ object XrayConfigBuilder {
     private const val DNS_RU = "77.88.8.8"
     private const val DNS_ABROAD = "1.1.1.1"
 
+    /**
+     * @param headHosts hostnames the app reaches the head at. Routed through
+     *        the tunnel rather than around it — see [routing].
+     */
     fun build(
         link: VlessLink,
         policy: RoutingPolicy,
+        headHosts: List<String> = emptyList(),
         logLevel: String = "warning",
     ): JsonElement = buildJsonObject {
         putJsonObject("log") { put("loglevel", logLevel) }
-        put("dns", dns(policy))
+        put("dns", dns(policy, headHosts))
         put("inbounds", inbounds())
         put("outbounds", outbounds(link))
-        put("routing", routing(policy))
+        put("routing", routing(policy, headHosts))
     }
 
-    fun buildJson(link: VlessLink, policy: RoutingPolicy, logLevel: String = "warning"): String =
-        build(link, policy, logLevel).toString()
+    fun buildJson(
+        link: VlessLink,
+        policy: RoutingPolicy,
+        headHosts: List<String> = emptyList(),
+        logLevel: String = "warning",
+    ): String = build(link, policy, headHosts, logLevel).toString()
 
-    private fun dns(policy: RoutingPolicy) = buildJsonObject {
+    private fun dns(policy: RoutingPolicy, headHosts: List<String>) = buildJsonObject {
         putJsonArray("servers") {
             // Russian names first: a matching server short-circuits, so this
             // one never has to be reached through the tunnel.
+            //
+            // The head's own names are excluded even when they end in .ru.
+            // Resolving them domestically is exactly what a DNS-level block
+            // interferes with, and the whole point of proxying them is to
+            // ask somebody else.
+            val headDomains = headHosts.map { "domain:${it.lowercase()}" }.toSet()
             add(buildJsonObject {
                 put("address", DNS_RU)
-                putJsonArray("domains") { policy.directDomainRules().forEach { add(it) } }
+                putJsonArray("domains") {
+                    policy.directDomainRules().filterNot { it in headDomains }.forEach { add(it) }
+                }
                 // Without this, a name this server declines to answer falls
                 // through to the foreign resolver and comes back with a
                 // foreign edge — the exact outcome the split is avoiding.
@@ -174,7 +191,7 @@ object XrayConfigBuilder {
         }
     }
 
-    private fun routing(policy: RoutingPolicy) = buildJsonObject {
+    private fun routing(policy: RoutingPolicy, headHosts: List<String>) = buildJsonObject {
         // Only resolve a domain to decide routing when no domain rule matched
         // it. "IPOnDemand" would resolve first and lose the name, which is
         // what the direct rules are keyed on.
@@ -187,6 +204,22 @@ object XrayConfigBuilder {
                 putJsonArray("inboundTag") { add(TAG_DNS_IN) }
                 put("outboundTag", TAG_DNS_OUT)
             })
+
+            // The head, before the direct rules — and that order is the
+            // whole point. A control-plane domain ending in .ru would
+            // otherwise match `domain:ru` and be sent around the tunnel,
+            // leaving a user whose ISP blocks that name unable to reach it
+            // even with the VPN up. Sending it through means the tunnel
+            // they already have repairs the problem by itself.
+            if (headHosts.isNotEmpty()) {
+                add(buildJsonObject {
+                    put("type", "field")
+                    putJsonArray("domain") {
+                        headHosts.forEach { add("domain:${it.lowercase()}") }
+                    }
+                    put("outboundTag", TAG_PROXY)
+                })
+            }
 
             val domains = policy.directDomainRules()
             if (domains.isNotEmpty()) {

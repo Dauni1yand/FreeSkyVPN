@@ -206,4 +206,58 @@ class XrayConfigBuilderTest {
         assertTrue(text.startsWith("{") && text.endsWith("}"))
         assertTrue(text.length > 500)
     }
+
+    // --- the head's own address ---------------------------------------------
+
+    private val headHosts = listOf("api.example.ru", "backup.example.com")
+
+    private fun rulesWithHead() = XrayConfigBuilder
+        .build(link, RoutingPolicy.DEFAULT, headHosts)
+        .jsonObject["routing"]!!.jsonObject["rules"]!!.jsonArray.map { it.jsonObject }
+
+    @Test
+    fun `the head goes through the tunnel, not around it`() {
+        val rule = rulesWithHead().first { it.outbound() == "proxy" && it.containsKey("domain") }
+        val domains = rule["domain"]!!.jsonArray.map { it.jsonPrimitive.content }
+
+        assertTrue("domain:api.example.ru" in domains)
+        assertTrue("domain:backup.example.com" in domains)
+    }
+
+    @Test
+    fun `a ru head domain is proxied despite the direct ru rule`() {
+        // The one that matters. Without this ordering, api.example.ru matches
+        // `domain:ru`, goes direct, and a user whose ISP blocks that name
+        // cannot reach the head even with the VPN up — so the tunnel they
+        // already have cannot repair the problem.
+        val all = rulesWithHead()
+        val headRule = all.indexOfFirst { it.outbound() == "proxy" && it.containsKey("domain") }
+        val directRule = all.indexOfFirst { it.outbound() == "direct" && it.containsKey("domain") }
+
+        assertTrue(headRule in 0 until directRule, "the head rule must precede the direct rules")
+    }
+
+    @Test
+    fun `the head is not resolved by the domestic dns server`() {
+        // Resolving it domestically is exactly what a DNS-level block
+        // interferes with; the point of proxying it is to ask someone else.
+        val ruServer = XrayConfigBuilder
+            .build(link, RoutingPolicy(version = 1, directTlds = listOf("ru"), directGeoip = listOf("ru")), headHosts)
+            .jsonObject["dns"]!!.jsonObject["servers"]!!.jsonArray[0].jsonObject
+
+        val domains = ruServer["domains"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("domain:api.example.ru" !in domains)
+    }
+
+    @Test
+    fun `no head hosts means no extra rule`() {
+        val all = rules()
+        assertEquals(0, all.count { it.outbound() == "proxy" && it.containsKey("domain") })
+    }
+
+    @Test
+    fun `the catch-all is still last with head hosts present`() {
+        assertEquals("proxy", rulesWithHead().last().outbound())
+        assertEquals(1, rulesWithHead().count { it["port"]?.jsonPrimitive?.content == "0-65535" })
+    }
 }

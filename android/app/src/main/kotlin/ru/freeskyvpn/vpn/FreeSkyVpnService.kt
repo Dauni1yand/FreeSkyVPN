@@ -16,8 +16,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import ru.freeskyvpn.BuildConfig
 import ru.freeskyvpn.MainActivity
 import ru.freeskyvpn.R
+import ru.freeskyvpn.core.ApiEndpoints
 import ru.freeskyvpn.core.SplitTunnel
 import ru.freeskyvpn.core.VlessLink
 import ru.freeskyvpn.core.XrayConfigBuilder
@@ -114,7 +116,20 @@ class FreeSkyVpnService : VpnService() {
         tun = descriptor
 
         val configFile = File(filesDir, "xray_config.json").apply {
-            writeText(XrayConfigBuilder.buildJson(link, storage.routingPolicy))
+            // The head's own addresses go through the tunnel rather than
+            // around it, so a control-plane domain blocked by an ISP is
+            // repaired by the VPN the user already has. Without this a
+            // `.ru` head domain would match the split tunnel's own
+            // `domain:ru` rule and stay unreachable.
+            writeText(
+                XrayConfigBuilder.buildJson(
+                    link = link,
+                    policy = storage.routingPolicy,
+                    headHosts = ApiEndpoints.proxiedHosts(
+                        ApiEndpoints.parse(BuildConfig.HEAD_API_URL)
+                    ),
+                )
+            )
         }
 
         goForeground(link.label)

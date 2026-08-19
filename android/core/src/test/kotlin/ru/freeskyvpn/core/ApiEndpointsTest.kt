@@ -127,4 +127,34 @@ class ApiEndpointsTest {
         assertTrue(ApiEndpoints.parse("").isEmpty())
         assertTrue(ApiEndpoints.parse("  ,  ").isEmpty())
     }
+
+    // --- hostnames for the routing rules ------------------------------------
+
+    @Test
+    fun `hostnames are extracted without scheme or port`() {
+        assertEquals("api.example.ru", ApiEndpoints.hostOf("https://api.example.ru/"))
+        assertEquals("192.168.1.5", ApiEndpoints.hostOf("http://192.168.1.5:8000"))
+        assertEquals("api.example.ru", ApiEndpoints.hostOf("api.example.ru"))
+    }
+
+    @Test
+    fun `every configured host is offered for proxying`() {
+        assertEquals(
+            listOf("api.example.ru", "backup.example.com"),
+            ApiEndpoints.proxiedHosts(configured),
+        )
+    }
+
+    @Test
+    fun `duplicate hosts collapse`() {
+        val hosts = ApiEndpoints.proxiedHosts(
+            listOf("https://api.example.ru", "https://api.example.ru/v2")
+        )
+        assertEquals(listOf("api.example.ru"), hosts)
+    }
+
+    @Test
+    fun `unusable entries do not become empty rules`() {
+        assertTrue(ApiEndpoints.proxiedHosts(listOf("", "ftp://x")).isEmpty())
+    }
 }
