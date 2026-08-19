@@ -8,6 +8,10 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -18,6 +22,7 @@ import androidx.compose.runtime.setValue
 import ru.freeskyvpn.ui.MainViewModel
 import ru.freeskyvpn.ui.screen.AccountScreen
 import ru.freeskyvpn.ui.screen.AppEntry
+import ru.freeskyvpn.ui.screen.Banner
 import ru.freeskyvpn.ui.screen.ConnectScreen
 import ru.freeskyvpn.ui.screen.SettingsScreen
 import ru.freeskyvpn.ui.theme.FreeSkyTheme
@@ -71,54 +76,86 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                when (screen) {
-                    Screen.Connect -> ConnectScreen(
-                        vpn = vpn,
-                        busy = ui.busy,
-                        splitTunnelActive = vm.storage.splitTunnelEnabled,
-                        onToggle = {
-                            if (vpn.status == VpnStatus.Connected) stopTunnel()
-                            else vm.connect(::requestVpnPermission)
-                        },
-                        onReportFailure = { vm.reportFailure { restartTunnel() } },
-                        onOpenAccount = {
-                            vm.loadAccount()
-                            screen = Screen.Account
-                        },
-                        onOpenSettings = { screen = Screen.Settings },
-                    )
+                // A Box so the banner floats over the screen rather than
+                // pushing it: two siblings straight inside the theme would
+                // draw on top of each other with no layout at all.
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (screen) {
+                        Screen.Connect -> ConnectScreen(
+                            vpn = vpn,
+                            busy = ui.busy,
+                            watchingAd = ui.watchingAd,
+                            hasAccess = ui.hasAccess,
+                            remainingLabel = ui.remainingLabel,
+                            runningLow = ui.runningLow,
+                            isGrace = ui.account?.accessIsGrace == true,
+                            splitTunnelActive = vm.storage.splitTunnelEnabled,
+                            onToggle = {
+                                if (vpn.status == VpnStatus.Connected) stopTunnel()
+                                // The ad, if one is needed, happens inside this
+                                // call — the user tapped connect, not "watch an
+                                // advert then connect".
+                                else vm.connect(this@MainActivity, ::requestVpnPermission)
+                            },
+                            onExtend = { vm.extendAccess(this@MainActivity) },
+                            onReportFailure = { vm.reportFailure { restartTunnel() } },
+                            onOpenAccount = {
+                                vm.loadAccount()
+                                screen = Screen.Account
+                            },
+                            onOpenSettings = { screen = Screen.Settings },
+                        )
 
-                    Screen.Settings -> {
-                        var splitOn by remember { mutableStateOf(vm.storage.splitTunnelEnabled) }
-                        SettingsScreen(
-                            splitTunnelEnabled = splitOn,
-                            apps = apps,
-                            onSplitTunnelChanged = {
-                                vm.storage.splitTunnelEnabled = it
-                                splitOn = it
-                            },
-                            onAppToggled = { entry, bypass ->
-                                onAppToggled(entry, bypass)
-                                // Updated in place rather than re-enumerating:
-                                // the switch has to move under the finger, and
-                                // a re-read would also resort the list out from
-                                // under it.
-                                apps = apps.map {
-                                    if (it.packageName == entry.packageName) it.copy(bypassing = bypass)
-                                    else it
-                                }
-                            },
+                        Screen.Settings -> {
+                            var splitOn by remember { mutableStateOf(vm.storage.splitTunnelEnabled) }
+                            SettingsScreen(
+                                splitTunnelEnabled = splitOn,
+                                apps = apps,
+                                onSplitTunnelChanged = {
+                                    vm.storage.splitTunnelEnabled = it
+                                    splitOn = it
+                                },
+                                onAppToggled = { entry, bypass ->
+                                    onAppToggled(entry, bypass)
+                                    // Updated in place rather than re-enumerating:
+                                    // the switch has to move under the finger, and
+                                    // a re-read would also resort the list out from
+                                    // under it.
+                                    apps = apps.map {
+                                        if (it.packageName == entry.packageName) it.copy(bypassing = bypass)
+                                        else it
+                                    }
+                                },
+                                onBack = { screen = Screen.Connect },
+                            )
+                        }
+
+                        Screen.Account -> AccountScreen(
+                            account = ui.account,
+                            remainingLabel = ui.remainingLabel,
+                            isGrace = ui.account?.accessIsGrace == true,
+                            linkCode = ui.linkCode,
+                            onRequestLinkCode = vm::requestLinkCode,
                             onBack = { screen = Screen.Connect },
                         )
                     }
 
-                    Screen.Account -> AccountScreen(
-                        account = ui.account,
-                        linkCode = ui.linkCode,
-                        onRequestLinkCode = vm::requestLinkCode,
-                        onStartTrial = vm::startTrial,
-                        onBack = { screen = Screen.Connect },
-                    )
+                    ui.error?.let { message ->
+                        Banner(
+                            text = message,
+                            isError = true,
+                            onDismiss = vm::dismissError,
+                            modifier = Modifier.align(Alignment.TopCenter),
+                        )
+                    }
+                    ui.notice?.let { message ->
+                        Banner(
+                            text = message,
+                            isError = false,
+                            onDismiss = vm::dismissNotice,
+                            modifier = Modifier.align(Alignment.TopCenter),
+                        )
+                    }
                 }
             }
         }

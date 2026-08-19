@@ -71,9 +71,28 @@ class Repository(context: Context) {
         return api.account()
     }
 
-    suspend fun startTrial(): Account {
+    /** The token to hand back when a rewarded ad finishes. */
+    suspend fun prepareAd(): String {
         ensureRegistered()
-        return api.startTrial()
+        return api.prepareAd().nonce
+    }
+
+    /** Claim the hour the user just earned. */
+    suspend fun completeAd(nonce: String): Account {
+        ensureRegistered()
+        return api.completeAd(nonce)
+    }
+
+    /**
+     * Take the fallback when no ad could be delivered.
+     *
+     * Not an error path to hide: without it, an outage at the ad network is
+     * an outage of the VPN, and a VPN that will not connect is not a
+     * degraded VPN.
+     */
+    suspend fun accessWithoutAd(): Account {
+        ensureRegistered()
+        return api.adUnavailable()
     }
 
     suspend fun startLink(): LinkCode {

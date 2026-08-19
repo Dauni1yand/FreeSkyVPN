@@ -1,7 +1,6 @@
 package ru.freeskyvpn.ui.screen
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,37 +8,40 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ru.freeskyvpn.core.Account
 import ru.freeskyvpn.core.LinkCode
 import ru.freeskyvpn.ui.theme.Metrics
 import ru.freeskyvpn.ui.theme.SystemGreen
+import ru.freeskyvpn.ui.theme.SystemOrange
 
 /**
- * The account, the subscription and the way to not lose either.
+ * The account: how much time is left, and how not to lose it.
  *
- * The link section is the important part of this screen. Registration is
- * anonymous so that nothing stands between installing the app and
- * connecting — the cost is that the account lives only on this phone until
- * it is linked. That is stated plainly here rather than buried, because a
- * user who loses their subscription with their phone will not accept
- * "it was in the settings" as an answer.
+ * There is no subscription section because there is no subscription. The
+ * service is paid for with attention — one ad, one hour — so what this
+ * screen has to explain is where the time came from and where it went.
+ *
+ * The link section is the important half. Registration is anonymous so that
+ * nothing stands between installing the app and connecting; the cost is
+ * that the account lives on this phone only until it is linked. That is
+ * said plainly rather than buried.
  */
 @Composable
 fun AccountScreen(
     account: Account?,
+    remainingLabel: String,
+    isGrace: Boolean,
     linkCode: LinkCode?,
     onRequestLinkCode: () -> Unit,
-    onStartTrial: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -50,38 +52,35 @@ fun AccountScreen(
     ) {
         ScreenHeader(title = "Аккаунт", onBack = onBack)
 
-        SectionCaption("Подписка")
+        SectionCaption("Доступ")
         Card {
             InfoRow(
-                label = "Статус",
-                value = when {
-                    account == null -> "…"
-                    account.subscriptionActive && account.subscriptionType == "trial" -> "Пробный период"
-                    account.subscriptionActive -> "Активна"
-                    else -> "Бесплатный доступ"
+                label = "Осталось",
+                value = if (account?.accessActive == true) remainingLabel else "нет",
+                valueColor = when {
+                    account?.accessActive != true -> null
+                    isGrace -> SystemOrange
+                    else -> SystemGreen
                 },
-                valueColor = if (account?.subscriptionActive == true) SystemGreen else null,
             )
-            account?.expiresAt?.let {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                InfoRow(label = "Действует до", value = it.take(10))
-            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            InfoRow(
+                label = "Один ролик даёт",
+                value = "${account?.adRewardMinutes ?: 60} мин",
+            )
         }
 
-        if (account?.trialAvailable == true) {
-            Spacer(Modifier.height(Metrics.itemSpacing))
-            PrimaryButton(text = "Попробовать 7 дней бесплатно", onClick = onStartTrial)
-        }
-
-        // Shown only when the server actually has a payment provider. An
-        // offer that cannot complete is worse than no offer.
-        if (account?.paymentsAvailable == true && !account.subscriptionActive) {
-            Spacer(Modifier.height(Metrics.itemSpacing))
-            Text(
-                text = "Оформить подписку можно в Telegram-боте.",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 4.dp),
+        Spacer(Modifier.height(8.dp))
+        if (isGrace) {
+            Caption(
+                "Сейчас работает запасной доступ: рекламу показать не удалось. " +
+                    "Он короче обычного и идёт с меньшим приоритетом — " +
+                    "посмотрите ролик, когда получится."
+            )
+        } else {
+            Caption(
+                "Сервис бесплатный и живёт на рекламе. Один досмотренный ролик " +
+                    "открывает час — этим и оплачиваются серверы."
             )
         }
 
@@ -93,10 +92,7 @@ fun AccountScreen(
                 InfoRow(label = "Telegram", value = "Привязан", valueColor = SystemGreen)
             }
             Spacer(Modifier.height(8.dp))
-            Caption(
-                "Аккаунт восстановится на новом телефоне: установите приложение " +
-                    "и пришлите боту новый код."
-            )
+            Caption("На новом телефоне установите приложение и пришлите боту новый код.")
         } else {
             Card {
                 Column(modifier = Modifier.padding(14.dp)) {
@@ -107,9 +103,8 @@ fun AccountScreen(
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "Мы не спрашивали ни почту, ни телефон — чтобы вы могли " +
-                            "подключиться сразу. Обратная сторона: если потеряете " +
-                            "телефон, подписка потеряется вместе с ним. Привязка к " +
-                            "Telegram это чинит.",
+                            "подключиться сразу. Обратная сторона: потеряете телефон — " +
+                            "потеряете аккаунт. Привязка к Telegram это чинит.",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -156,10 +151,7 @@ private fun LinkCodeCard(code: LinkCode) {
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(6.dp))
-            Text(
-                text = "/link ${code.code}",
-                style = MaterialTheme.typography.titleMedium,
-            )
+            Text("/link ${code.code}", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(10.dp))
             Text(
                 text = "Код работает 10 минут.",
@@ -171,7 +163,7 @@ private fun LinkCodeCard(code: LinkCode) {
 }
 
 @Composable
-private fun InfoRow(label: String, value: String, valueColor: androidx.compose.ui.graphics.Color? = null) {
+private fun InfoRow(label: String, value: String, valueColor: Color? = null) {
     Row(
         modifier = Modifier.fillMaxWidth().height(Metrics.rowHeight).padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -193,20 +185,4 @@ private fun Caption(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 4.dp),
     )
-}
-
-@Composable
-internal fun PrimaryButton(text: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(Metrics.rowHeight)
-            .clip(RoundedCornerShape(Metrics.cardCorner))
-            .background(MaterialTheme.colorScheme.primary)
-            .clickable(onClick = onClick),
-        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text, style = MaterialTheme.typography.labelLarge, color = androidx.compose.ui.graphics.Color.White)
-    }
 }

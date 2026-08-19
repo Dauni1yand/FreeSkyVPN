@@ -1,20 +1,19 @@
-"""Keeps a user on an inbound that matches what they are entitled to.
+"""Keeps a user on an inbound that matches what they currently have.
 
-Nodes are shared: every node serves free and paying users alike. What
-separates them is the inbound, because its port is what `tc` on the node
-classifies — paid ports are served first when the link is contended, free
-ports take what is left (app/services/tiers.py). So "upgrade a user" means
-"move them to a paid-tier inbound", not "move them to another server".
+Nodes are shared: every node serves everyone. What separates users is the
+inbound, because its port is what `tc` on the node classifies — the full
+class is served first when the link is contended, the grace class takes
+what is left (app/services/tiers.py). So "upgrade a user" means "move them
+to a full-class inbound", not "move them to another server".
 
-Two events change a user's tier, and both go through `reconcile_placement`
-so the paths cannot drift:
+Two events change which class a user belongs in, and both come through
+`reconcile_placement` so the paths cannot drift:
 
-  paying      an upgrade should be felt immediately, not at the next
-              reconnect, so placement is reconciled as soon as payment is
-              confirmed.
-  expiring    nobody delivers an expiry event — a subscription simply stops
-              being current at a timestamp — so a periodic sweep moves
-              lapsed users back down (scheduler.py).
+  watched an ad   the hour they just bought should be felt immediately, not
+                  at the next reconnect.
+  hour ran out    nobody delivers an expiry event — access simply stops
+                  being current at a timestamp — so a periodic sweep moves
+                  lapsed users down (scheduler.py).
 """
 
 from __future__ import annotations
@@ -27,20 +26,23 @@ from sqlalchemy.orm import Session
 from app.db.models.node import Assignment, Inbound
 from app.db.models.outbox import ConfigPush, PushReason
 from app.db.models.user import User
+from app.services import access
 from app.services.config_selector import active_assignment, assign_config
-from app.services.subscriptions import current_subscription
 from app.services.tiers import Tier
 
 logger = logging.getLogger(__name__)
 
 
 def required_tier(db: Session, user: User) -> Tier:
-    """Paid while a subscription (trial included) is live, free otherwise.
+    """The class this user has earned right now.
 
-    A trial deliberately grants the paid tier: its whole purpose is showing
-    what paying buys.
+    Full while an ad-bought hour is running. Grace otherwise — including
+    for someone whose access has lapsed entirely, because a lapsed user
+    with a live connection should degrade rather than be cut off mid-page.
+    Refusing them a *new* connection is `/me/connect`'s job, not this one.
     """
-    return Tier.paid if current_subscription(db, user) is not None else Tier.free
+    state = access.state_of(user)
+    return Tier.full if state.active and not state.is_grace else Tier.grace
 
 
 def current_tier(db: Session, user: User) -> Tier | None:
@@ -52,18 +54,18 @@ def current_tier(db: Session, user: User) -> Tier | None:
 
 
 def reconcile_placement(db: Session, user: User, *, notify: bool = True) -> bool:
-    """Move `user` onto an inbound matching their entitlement. True if moved.
+    """Move `user` onto an inbound matching their class. True if moved.
 
-    A user with no assignment at all is left alone: they will be placed on
-    the right tier the next time they connect, and minting a config for
-    someone who is not asking for one would load nodes for nothing.
+    A user with no assignment at all is left alone: they will be placed
+    correctly the next time they connect, and minting a config for someone
+    who is not asking for one would load nodes for nothing.
     """
     wanted = required_tier(db, user)
     present = current_tier(db, user)
     if present is None or present == wanted:
         return False
 
-    logger.info("moving user %s from %s tier to %s tier", user.id, present.value, wanted.value)
+    logger.info("moving user %s from %s to %s class", user.id, present.value, wanted.value)
     assign_config(db, user)
 
     if notify:
@@ -81,10 +83,10 @@ def reconcile_placement(db: Session, user: User, *, notify: bool = True) -> bool
 
 
 def users_on_wrong_tier(db: Session) -> list[User]:
-    """Everyone whose current inbound tier no longer matches their entitlement.
+    """Everyone whose inbound no longer matches the class they have earned.
 
-    Almost always this is expiries, but it also catches a user who was placed
-    on the other tier because theirs had no capacity at the time.
+    Almost always this is hours running out, but it also catches a user who
+    landed on the other class because theirs had no capacity at the time.
     """
     assignments = db.scalars(select(Assignment).where(Assignment.released_at.is_(None))).all()
 

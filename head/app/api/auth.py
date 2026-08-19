@@ -4,7 +4,7 @@ Every endpoint here is currently called by trusted server-side clients (the
 Telegram bot, provisioning scripts) rather than by end users, so a single
 shared secret is the right weight of mechanism. Without it `/connect` would
 hand out a working config for any `user_id` a caller cared to name, and
-`/payments/confirm` would let anyone grant themselves a subscription.
+`/admin/grant-access` would let anyone put themselves online for free.
 
 The Android phase adds per-user tokens on top; those authenticate the
 *user*, while this keeps authenticating the *caller*.

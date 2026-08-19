@@ -15,11 +15,11 @@ from app.db.models.logs import (
 )
 from app.db.models.node import Assignment, Inbound, Node, SniCandidate, SniProbe
 from app.db.models.outbox import ConfigPush, PushReason
-from app.db.models.plan import Payment, Plan, Subscription
 from app.db.models.update import NodeUpdate, NodeUpdateStatus
-from app.db.models.user import AuthIdentity, LinkCode, User, UserSession
+from app.db.models.user import AdNonce, AuthIdentity, LinkCode, User, UserSession
 
 __all__ = [
+    "AdNonce",
     "AdView",
     "AdminAudit",
     "AdminUser",
@@ -34,12 +34,9 @@ __all__ = [
     "NodeChannelEvent",
     "NodeUpdate",
     "NodeUpdateStatus",
-    "Payment",
-    "Plan",
     "PushReason",
     "SniCandidate",
     "SniProbe",
-    "Subscription",
     "TrafficUsage",
     "User",
     "UserSession",

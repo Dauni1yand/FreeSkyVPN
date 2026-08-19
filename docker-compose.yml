@@ -63,7 +63,8 @@ services:
       HEAD_SERVICE_TOKEN: ${HEAD_SECRET_KEY}
       # The only chat allowed to approve an Xray update from Telegram.
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
-      PAYMENT_PROVIDER_TOKEN: ${PAYMENT_PROVIDER_TOKEN:-}
+      # Chats allowed online through the bot; it cannot show ads.
+      TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
 
 volumes:
   pgdata:

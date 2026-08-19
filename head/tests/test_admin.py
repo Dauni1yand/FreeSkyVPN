@@ -13,7 +13,7 @@ route around it, including the failure path, is exercised for real.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,7 +27,6 @@ from app.db import models  # noqa: F401 - registers tables
 from app.db.base import Base
 from app.db.models.admin import AdminAudit
 from app.db.models.node import Node, NodeStatus, SniCandidate
-from app.db.models.plan import Plan, Subscription, SubscriptionType
 from app.db.models.user import UserStatus
 from app.main import app
 from app.services import provisioning
@@ -136,7 +135,6 @@ def test_a_forged_session_cookie_is_not_accepted(client):
         "/admin",
         "/admin/nodes",
         "/admin/users",
-        "/admin/plans",
         "/admin/sni",
         "/admin/updates",
         "/admin/events",
@@ -155,7 +153,6 @@ def test_every_page_renders_when_empty(auth, path):
         "/admin",
         "/admin/nodes",
         "/admin/users",
-        "/admin/plans",
         "/admin/sni",
         "/admin/updates",
         "/admin/events",
@@ -169,7 +166,6 @@ def test_every_page_renders_with_data(auth, db, path):
     from tests.factories import make_assignment
 
     make_assignment(db, user, inbound)
-    db.add(Plan(code="m", name="Месяц", duration_days=30, max_devices=2, price=199))
     db.commit()
 
     response = auth.get(path)
@@ -298,45 +294,69 @@ def test_acting_on_a_missing_node_is_reported_not_crashed(auth):
 # --- user management -----------------------------------------------------
 
 
-def test_granting_a_subscription(auth, db):
+def test_granting_access_by_hand(auth, db):
+    """An operator can put someone online without an ad — for support, or
+    for testing a node."""
     user = make_user(db)
     db.commit()
 
-    auth.post(f"/admin/users/{user.id}/grant", data={"days": "30"})
+    auth.post(f"/admin/users/{user.id}/grant", data={"hours": "3"})
 
-    sub = db.query(Subscription).filter(Subscription.user_id == user.id).one()
-    assert sub.type == SubscriptionType.paid
+    db.expire_all()
+    from app.services import access
+
+    state = access.state_of(db.get(type(user), user.id))
+    assert state.active
+    assert 2 * 3600 < state.seconds_remaining <= 3 * 3600
 
 
-def test_granting_twice_extends_rather_than_duplicates(auth, db):
+def test_a_manual_grant_stacks_rather_than_replacing(auth, db):
+    user = make_user(db)
+    db.commit()
+    auth.post(f"/admin/users/{user.id}/grant", data={"hours": "2"})
+    auth.post(f"/admin/users/{user.id}/grant", data={"hours": "2"})
+
+    db.expire_all()
+    from app.services import access
+
+    assert access.state_of(db.get(type(user), user.id)).seconds_remaining > 3 * 3600
+
+
+def test_a_manual_grant_records_the_operator(auth, db):
+    """It bypasses the ads, so the gap has to be answerable."""
+    from app.db.models.logs import AdView
+
+    user = make_user(db)
+    db.commit()
+    auth.post(f"/admin/users/{user.id}/grant", data={"hours": "1"})
+
+    db.expire_all()
+    assert db.query(AdView).one().source == f"manual:{ADMIN_USER}"
+
+
+def test_granting_zero_hours_is_refused(auth, db):
     user = make_user(db)
     db.commit()
 
-    auth.post(f"/admin/users/{user.id}/grant", data={"days": "30"})
-    first = db.query(Subscription).one().expires_at
-    auth.post(f"/admin/users/{user.id}/grant", data={"days": "30"})
-
-    subs = db.query(Subscription).all()
-    assert len(subs) == 1, "a second grant must not stack a second subscription row"
-    assert subs[0].expires_at > first
-
-
-def test_revoking_a_subscription(auth, db):
-    user = make_user(db)
-    db.add(
-        Subscription(
-            user_id=user.id,
-            type=SubscriptionType.paid,
-            expires_at=datetime.now(UTC) + timedelta(days=30),
-        )
+    response = auth.post(
+        f"/admin/users/{user.id}/grant", data={"hours": "0"}, follow_redirects=False
     )
+
+    assert response.status_code == 303
+    assert "err" in response.headers["set-cookie"]
+
+
+def test_revoking_access(auth, db):
+    from app.services import access
+
+    user = make_user(db)
+    access.grant_manual(db, user, 120, by="test")
     db.commit()
 
     auth.post(f"/admin/users/{user.id}/revoke")
 
-    from app.services.subscriptions import status_for
-
-    assert status_for(db, user).active is False
+    db.expire_all()
+    assert not access.has_access(db.get(type(user), user.id))
 
 
 def test_banning_and_unbanning(auth, db):
@@ -374,38 +394,6 @@ def test_user_search_with_no_matches_renders_empty(auth, db):
 
 
 # --- plans and SNI -------------------------------------------------------
-
-
-def test_adding_a_plan(auth, db):
-    auth.post(
-        "/admin/plans/add",
-        data={"code": "half", "name": "Полгода", "duration_days": "180", "max_devices": "3", "price": "899"},
-    )
-    assert db.query(Plan).filter(Plan.code == "half").one().duration_days == 180
-
-
-def test_duplicate_plan_code_is_refused(auth, db):
-    db.add(Plan(code="dupe", name="x", duration_days=30, max_devices=1, price=1))
-    db.commit()
-
-    response = auth.post(
-        "/admin/plans/add",
-        data={"code": "dupe", "name": "y", "duration_days": "30", "max_devices": "1", "price": "1"},
-    )
-    assert "уже есть" in response.text
-    assert db.query(Plan).count() == 1
-
-
-def test_hiding_a_plan_keeps_it_for_existing_subscribers(auth, db):
-    plan = Plan(code="m", name="Месяц", duration_days=30, max_devices=1, price=199)
-    db.add(plan)
-    db.commit()
-
-    auth.post(f"/admin/plans/{plan.id}/toggle")
-
-    db.refresh(plan)
-    assert plan.active is False
-    assert db.query(Plan).count() == 1, "hidden, not deleted"
 
 
 def test_adding_an_sni_domain(auth, db):

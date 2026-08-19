@@ -18,8 +18,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-# Tier lives on the inbound rather than the node: every node serves both
-# audiences, and `tc` on the node tells them apart by port.
+# The service class lives on the inbound rather than the node: every node
+# serves everyone, and `tc` on the node tells the classes apart by port.
 from app.services.tiers import Tier
 
 
@@ -109,10 +109,12 @@ class Inbound(Base):
     port: Mapped[int] = mapped_column(Integer)
     sni: Mapped[str] = mapped_column(String(255))
     transport: Mapped[str] = mapped_column(String(32), default="reality-vision")
-    # Which audience this inbound serves. The node's `tc` rules key their
-    # priority classes off this inbound's port, so the two must agree —
-    # app/services/tiers.py owns the mapping.
-    tier: Mapped[Tier] = mapped_column(Enum(Tier, name="inbound_tier"), default=Tier.free)
+    # Which service class this inbound belongs to: `full` for users whose
+    # ad-bought hour is running, `grace` for the fallback when no ad could
+    # be delivered. The node's `tc` rules key their priority classes off
+    # this port, so the two must agree — app/services/tiers.py owns the
+    # mapping.
+    tier: Mapped[Tier] = mapped_column(Enum(Tier, name="inbound_tier"), default=Tier.grace)
 
     # reality_private_key is sensitive: it must be embedded in every full
     # config push (marzban-node has no "add one user" call — see

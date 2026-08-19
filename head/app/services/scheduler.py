@@ -72,9 +72,9 @@ async def sni_maintenance_loop() -> None:
 def run_tier_reconciliation() -> None:
     """Move users whose entitlement no longer matches the node they are on.
 
-    Needed because expiry is not an event anybody delivers: a subscription
-    simply stops being current at a timestamp, and without a sweep a lapsed
-    user would keep the paid tier until they happened to reconnect.
+    Needed because expiry is not an event anybody delivers: an ad-bought
+    hour simply stops being current at a timestamp, and without a sweep a
+    lapsed user would keep the priority class until they reconnected.
     """
     from app.services.config_selector import NoCapacityError
     from app.services.tiering import reconcile_placement, users_on_wrong_tier

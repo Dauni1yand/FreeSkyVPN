@@ -7,7 +7,7 @@ bearer token and a `user_id` in the body would be ignored — a client that
 can name any user is a client that can act as any user.
 
 The endpoints mirror the four buttons the product has: connect, "не
-работает", subscription, account.
+работает", доступ, аккаунт.
 """
 
 from __future__ import annotations
@@ -23,15 +23,14 @@ from app.api.auth import ServiceAuth
 from app.api.deps import DbSession
 from app.api.user_auth_dep import CurrentUser
 from app.config import get_settings
-from app.db.models.user import AuthIdentity, AuthProvider
-from app.services import routing_policy, user_auth
+from app.db.models.user import AuthIdentity, AuthProvider, User
+from app.services import access, routing_policy, user_auth
 from app.services.config_selector import NoCapacityError, assign_config
 from app.services.fail_handler import (
     NoActiveConfigError,
     ReportTooSoonError,
     report_failure,
 )
-from app.services.subscriptions import TrialAlreadyUsedError, start_trial, status_for
 from app.services.tiering import reconcile_placement
 
 # The service token still guards the whole router: it says "this is our app
@@ -87,6 +86,17 @@ class FailureResponse(ConfigResponse):
 
 @router.post("/me/connect", response_model=ConfigResponse)
 def connect(db: DbSession, user: CurrentUser) -> ConfigResponse:
+    # The whole business model in one guard: the service is funded by
+    # advertising, so an hour has to be bought before it can be used.
+    # 402 rather than 403 — the client's move is to show an ad, not to
+    # re-authenticate, and the two must not look alike to it.
+    try:
+        access.require_access(user)
+    except access.NoAccessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
+        ) from exc
+
     try:
         config = assign_config(db, user)
     except NoCapacityError as exc:
@@ -130,23 +140,26 @@ def report_not_working(db: DbSession, user: CurrentUser) -> FailureResponse:
     )
 
 
-# --- account and subscription -------------------------------------------
+# --- account and access -------------------------------------------------
 
 
 class AccountResponse(BaseModel):
     user_id: uuid.UUID
     telegram_linked: bool
-    subscription_active: bool
-    subscription_type: str | None
-    expires_at: datetime | None
-    trial_available: bool
-    # False while PAYMENT_PROVIDER_TOKEN is unset, so the app hides the buy
-    # button instead of offering a purchase that cannot complete.
-    payments_available: bool
+    # How much of the hour bought with the last ad is left. The app turns
+    # this into a countdown and into whether the connect button works.
+    access_active: bool
+    access_expires_at: datetime | None
+    access_seconds_remaining: int
+    # True when the current stretch came from the fallback rather than an
+    # ad, so the app can say why it feels slower.
+    access_is_grace: bool
+    # Minutes the next completed ad will buy.
+    ad_reward_minutes: int
 
 
 def _account(db: DbSession, user) -> AccountResponse:
-    sub = status_for(db, user)
+    state = access.state_of(user)
     linked = db.scalar(
         select(AuthIdentity).where(
             AuthIdentity.user_id == user.id,
@@ -156,11 +169,11 @@ def _account(db: DbSession, user) -> AccountResponse:
     return AccountResponse(
         user_id=user.id,
         telegram_linked=linked is not None,
-        subscription_active=sub.active,
-        subscription_type=sub.type,
-        expires_at=sub.expires_at,
-        trial_available=sub.trial_available,
-        payments_available=bool(get_settings().payment_provider_token),
+        access_active=state.active,
+        access_expires_at=state.expires_at,
+        access_seconds_remaining=state.seconds_remaining,
+        access_is_grace=state.is_grace,
+        ad_reward_minutes=get_settings().ad_reward_minutes,
     )
 
 
@@ -169,25 +182,77 @@ def me(db: DbSession, user: CurrentUser) -> AccountResponse:
     return _account(db, user)
 
 
-@router.post("/me/trial", response_model=AccountResponse)
-def trial(db: DbSession, user: CurrentUser) -> AccountResponse:
-    try:
-        start_trial(db, user)
-    except TrialAlreadyUsedError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+# --- buying an hour with attention --------------------------------------
 
-    # A trial changes the tier, and the tier changes which ports the user
-    # belongs on. Moving them now rather than at the next sweep is what makes
-    # the upgrade feel immediate.
+
+class AdTicket(BaseModel):
+    nonce: str
+    reward_minutes: int
+
+
+@router.post("/me/ad/prepare", response_model=AdTicket)
+def ad_prepare(db: DbSession, user: CurrentUser) -> AdTicket:
+    """Issue the token the client returns once the ad finishes.
+
+    Exists so that one recorded HTTP call is not an unlimited access
+    generator. It is friction rather than proof — a modified client can ask
+    for a token and claim the reward without showing anything — and the
+    real control is the network's own callback, see /ad/verify.
+    """
+    nonce = access.issue_nonce(db, user)
+    db.commit()
+    return AdTicket(nonce=nonce.nonce, reward_minutes=get_settings().ad_reward_minutes)
+
+
+class AdCompleteRequest(BaseModel):
+    nonce: str
+
+
+@router.post("/me/ad/complete", response_model=AccountResponse)
+def ad_complete(payload: AdCompleteRequest, db: DbSession, user: CurrentUser) -> AccountResponse:
+    try:
+        access.redeem_nonce(db, user, payload.nonce)
+    except access.InvalidNonceError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    _settle(db, user)
+    db.commit()
+    return _account(db, user)
+
+
+@router.post("/me/ad/unavailable", response_model=AccountResponse)
+def ad_unavailable(db: DbSession, user: CurrentUser) -> AccountResponse:
+    """The client could not get an ad to show. Let them online anyway, briefly.
+
+    Without this, a bad fill rate or an outage at the ad network is a total
+    outage of the VPN — and a VPN that will not connect is not a degraded
+    VPN. The grant is short, rate limited and lands on the lower-priority
+    class, so it costs less than the ad it replaces and cannot become the
+    way to skip one.
+    """
+    try:
+        access.grant_grace(db, user)
+    except access.GraceUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+
+    _settle(db, user)
+    db.commit()
+    return _account(db, user)
+
+
+def _settle(db: DbSession, user) -> None:
+    """Move the user onto the class they just earned, if they are connected.
+
+    Doing it now rather than at the next sweep is what makes the reward feel
+    immediate. A user with no live assignment is left alone — they will be
+    placed correctly when they connect.
+    """
     try:
         reconcile_placement(db, user)
     except NoCapacityError:
-        # The entitlement is real even if no paid-tier slot is free this
+        # The access is real even if no slot in that class is free this
         # second; the reconciliation loop will move them.
         pass
-
-    db.commit()
-    return _account(db, user)
 
 
 # --- linking to Telegram -------------------------------------------------
@@ -266,3 +331,68 @@ def get_routing_policy(_user: CurrentUser) -> RoutingPolicyResponse:
         direct_packages=list(policy.direct_packages),
         direct_geoip=list(policy.direct_geoip),
     )
+
+
+# --- server-side verification -------------------------------------------
+
+
+class AdVerifyRequest(BaseModel):
+    nonce: str
+    source: str = "ssv"
+
+
+@router.post("/ad/verify")
+def ad_verify(payload: AdVerifyRequest, db: DbSession) -> dict:
+    """Grant against the ad network's server-to-server callback.
+
+    Deliberately not bearer-authenticated: the caller is the network, which
+    has no user token and no device to lie for. This is the only path that
+    actually proves an ad was watched — everything on /me/ad/* trusts the
+    client. Wire this up, set AD_SSV_REQUIRED, and the client's word stops
+    being accepted.
+
+    The network's own signature check belongs in front of this endpoint
+    (each provider signs differently); the shared service token is what
+    keeps it from being open to the internet in the meantime.
+    """
+    try:
+        state = access.redeem_verified(db, payload.nonce, source=payload.source)
+    except access.InvalidNonceError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    db.commit()
+    return {"granted_until": state.expires_at.isoformat() if state.expires_at else None}
+
+
+# --- service-side grants -------------------------------------------------
+
+
+class GrantAccessRequest(BaseModel):
+    user_id: uuid.UUID
+    minutes: int | None = None
+
+
+@router.post("/admin/grant-access", response_model=AccountResponse)
+def grant_access(payload: GrantAccessRequest, db: DbSession) -> AccountResponse:
+    """Put an account online without an ad. Service-token only.
+
+    Exists for the bot, which cannot show rewarded video — Telegram has no
+    such SDK — and therefore cannot take part in what pays for the servers.
+    The bot decides who is allowed to ask; this records that it happened,
+    with the source marked, so a gap between ads watched and hours served
+    stays answerable.
+    """
+    user = db.get(User, payload.user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown user")
+
+    minutes = payload.minutes or get_settings().ad_reward_minutes
+    access.grant_manual(db, user, minutes, by="bot")
+
+    try:
+        reconcile_placement(db, user)
+    except NoCapacityError:
+        pass
+
+    db.commit()
+    return _account(db, user)

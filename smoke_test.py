@@ -140,13 +140,17 @@ def main() -> int:
     user_id = check("register a throwaway user", register)
 
     if user_id:
-        def subscription():
-            response = api.post("/api/v1/subscription", json={"user_id": user_id})
-            assert response.status_code == 200, response.text[:160]
+        def grant():
+            # There is no subscription to read any more: access is time
+            # bought with a watched ad. The bot cannot show one, so this
+            # exercises the same service-side grant the bot uses.
+            response = api.post("/api/v1/admin/grant-access", json={"user_id": user_id})
+            assert response.status_code == 200, f"{response.status_code}: {response.text[:160]}"
             data = response.json()
-            return f"free tier, trial available: {data['trial_available']}"
+            assert data["access_active"], "grant did not put the account online"
+            return f"{data['access_seconds_remaining'] // 60} min of access granted"
 
-        check("read subscription status", subscription)
+        check("grant access without an ad", grant)
 
         def connect():
             if not nodes or not any(n["status"] == "active" for n in nodes):

@@ -30,7 +30,7 @@ class AdminAudit(Base):
     """What an operator did.
 
     Every action here changes live infrastructure or someone's paid service,
-    so "who granted this subscription" and "who rotated that password" need
+    so "who granted this access" and "who rotated that password" need
     answers that outlive a log file.
     """
 

@@ -67,6 +67,19 @@ def _authed(client, token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "X-Service-Token": TOKEN}
 
 
+def _watch_ad(client, token: str) -> dict:
+    """The full round trip a real client makes to buy an hour."""
+    ticket = client.post("/api/v1/me/ad/prepare", headers=_authed(client, token))
+    assert ticket.status_code == 200, ticket.text
+    done = client.post(
+        "/api/v1/me/ad/complete",
+        json={"nonce": ticket.json()["nonce"]},
+        headers=_authed(client, token),
+    )
+    assert done.status_code == 200, done.text
+    return done.json()
+
+
 # --- registration --------------------------------------------------------
 
 
@@ -113,11 +126,26 @@ def test_a_banned_account_gets_403_not_401(client, db):
 # --- connect -------------------------------------------------------------
 
 
-def test_connect_serves_the_token_holder(client, db):
+def test_connect_is_refused_until_an_ad_is_watched(client, db):
+    """The business model, as an assertion. 402 rather than 403 — the
+    client's move is to show an ad, not to re-authenticate, and the two
+    must not look alike to it."""
     node = make_node(db)
     make_inbound(db, node)
     db.commit()
     token, _ = _register(client)
+
+    response = client.post("/api/v1/me/connect", headers=_authed(client, token))
+
+    assert response.status_code == 402
+
+
+def test_connect_serves_the_token_holder_after_an_ad(client, db):
+    node = make_node(db)
+    make_inbound(db, node)
+    db.commit()
+    token, _ = _register(client)
+    _watch_ad(client, token)
 
     response = client.post("/api/v1/me/connect", headers=_authed(client, token))
 
@@ -140,6 +168,8 @@ def test_two_apps_get_their_own_configs(client, db):
     db.commit()
     first_token, first_id = _register(client)
     second_token, second_id = _register(client)
+    _watch_ad(client, first_token)
+    _watch_ad(client, second_token)
 
     client.post("/api/v1/me/connect", headers=_authed(client, first_token))
     client.post("/api/v1/me/connect", headers=_authed(client, second_token))
@@ -152,45 +182,109 @@ def test_two_apps_get_their_own_configs(client, db):
 
 
 def test_no_capacity_is_reported_as_503(client):
+    """Distinct from 402: the user did their part, we have no room."""
     token, _ = _register(client)
+    _watch_ad(client, token)
     response = client.post("/api/v1/me/connect", headers=_authed(client, token))
     assert response.status_code == 503
 
 
 def test_report_failure_without_a_config_is_a_conflict_not_a_crash(client):
     token, _ = _register(client)
+    _watch_ad(client, token)
     response = client.post("/api/v1/me/report-failure", headers=_authed(client, token))
     assert response.status_code == 409
 
 
-# --- account and trial ---------------------------------------------------
+# --- buying an hour ------------------------------------------------------
 
 
-def test_a_fresh_account_can_start_a_trial(client):
+def test_a_fresh_account_has_no_access(client):
     token, _ = _register(client)
 
-    before = client.get("/api/v1/me", headers=_authed(client, token)).json()
-    assert before["trial_available"] is True
-    assert before["telegram_linked"] is False
+    body = client.get("/api/v1/me", headers=_authed(client, token)).json()
 
-    after = client.post("/api/v1/me/trial", headers=_authed(client, token)).json()
-    assert after["subscription_active"] is True
-    assert after["subscription_type"] == "trial"
-    assert after["trial_available"] is False
+    assert body["access_active"] is False
+    assert body["access_seconds_remaining"] == 0
+    assert body["ad_reward_minutes"] == 60
 
 
-def test_a_second_trial_is_refused(client):
+def test_a_completed_ad_buys_an_hour(client):
     token, _ = _register(client)
-    client.post("/api/v1/me/trial", headers=_authed(client, token))
 
-    response = client.post("/api/v1/me/trial", headers=_authed(client, token))
-    assert response.status_code == 409
+    body = _watch_ad(client, token)
+
+    assert body["access_active"] is True
+    assert 3500 < body["access_seconds_remaining"] <= 3600
+    assert body["access_is_grace"] is False
 
 
-def test_the_buy_button_is_hidden_while_payments_are_unconfigured(client):
-    """Offering a purchase that cannot complete is worse than offering none."""
+def test_a_token_cannot_be_spent_twice_over_http(client):
+    """Without this, one recorded call is an unlimited access generator."""
     token, _ = _register(client)
-    assert client.get("/api/v1/me", headers=_authed(client, token)).json()["payments_available"] is False
+    ticket = client.post("/api/v1/me/ad/prepare", headers=_authed(client, token)).json()
+    client.post(
+        "/api/v1/me/ad/complete", json={"nonce": ticket["nonce"]},
+        headers=_authed(client, token),
+    )
+
+    again = client.post(
+        "/api/v1/me/ad/complete", json={"nonce": ticket["nonce"]},
+        headers=_authed(client, token),
+    )
+
+    assert again.status_code == 400
+
+
+def test_one_account_cannot_redeem_anothers_token(client):
+    mine, _ = _register(client)
+    theirs, _ = _register(client)
+    ticket = client.post("/api/v1/me/ad/prepare", headers=_authed(client, mine)).json()
+
+    stolen = client.post(
+        "/api/v1/me/ad/complete", json={"nonce": ticket["nonce"]},
+        headers=_authed(client, theirs),
+    )
+
+    assert stolen.status_code == 400
+
+
+def test_a_made_up_token_is_refused(client):
+    token, _ = _register(client)
+    response = client.post(
+        "/api/v1/me/ad/complete", json={"nonce": "invented"}, headers=_authed(client, token)
+    )
+    assert response.status_code == 400
+
+
+def test_the_fallback_lets_someone_online_when_no_ad_could_be_shown(client):
+    """A bad fill rate must not be a total outage — a VPN that will not
+    connect is not a degraded VPN."""
+    token, _ = _register(client)
+
+    body = client.post("/api/v1/me/ad/unavailable", headers=_authed(client, token)).json()
+
+    assert body["access_active"] is True
+    assert body["access_is_grace"] is True
+
+
+def test_the_fallback_cannot_be_farmed(client):
+    token, _ = _register(client)
+    client.post("/api/v1/me/ad/unavailable", headers=_authed(client, token))
+
+    again = client.post("/api/v1/me/ad/unavailable", headers=_authed(client, token))
+
+    assert again.status_code == 429
+
+
+def test_the_fallback_still_lets_the_user_connect(client, db):
+    node = make_node(db)
+    make_inbound(db, node, port=8443)
+    db.commit()
+    token, _ = _register(client)
+    client.post("/api/v1/me/ad/unavailable", headers=_authed(client, token))
+
+    assert client.post("/api/v1/me/connect", headers=_authed(client, token)).status_code == 200
 
 
 # --- linking -------------------------------------------------------------

@@ -38,21 +38,11 @@ class FailureResult:
 
 
 @dataclass(frozen=True)
-class Subscription:
-    active: bool
-    type: str | None
-    expires_at: str | None
-    plan_code: str | None
-    trial_available: bool
-
-
-@dataclass(frozen=True)
-class Plan:
-    code: str
-    name: str
-    duration_days: int
-    price: float
-    currency: str
+class Account:
+    user_id: str
+    access_active: bool
+    access_seconds_remaining: int
+    access_is_grace: bool
 
 
 @dataclass(frozen=True)
@@ -147,59 +137,19 @@ class HeadApi:
         )
 
     # --- billing --------------------------------------------------------
-    async def subscription(self, user_id: str) -> Subscription:
-        data = await self._post("/api/v1/subscription", {"user_id": user_id})
-        return Subscription(
-            active=data["active"],
-            type=data["type"],
-            expires_at=data["expires_at"],
-            plan_code=data["plan_code"],
-            trial_available=data["trial_available"],
-        )
+    async def grant_test_access(self, user_id: str) -> Account:
+        """Put a whitelisted tester online without an ad.
 
-    async def start_trial(self, user_id: str) -> Subscription:
-        data = await self._post("/api/v1/subscription/trial", {"user_id": user_id})
-        return Subscription(
-            active=data["active"],
-            type=data["type"],
-            expires_at=data["expires_at"],
-            plan_code=data["plan_code"],
-            trial_available=data["trial_available"],
-        )
-
-    async def plans(self) -> list[Plan]:
-        rows = await self._get("/api/v1/plans")
-        return [
-            Plan(
-                code=r["code"],
-                name=r["name"],
-                duration_days=r["duration_days"],
-                price=r["price"],
-                currency=r["currency"],
-            )
-            for r in rows
-        ]
-
-    async def confirm_payment(
-        self, user_id: str, plan_code: str, provider_payment_id: str, amount: float, currency: str
-    ) -> Subscription:
-        data = await self._post(
-            "/api/v1/payments/confirm",
-            {
-                "user_id": user_id,
-                "plan_code": plan_code,
-                "provider": "telegram",
-                "provider_payment_id": provider_payment_id,
-                "amount": amount,
-                "currency": currency,
-            },
-        )
-        return Subscription(
-            active=data["active"],
-            type=data["type"],
-            expires_at=data["expires_at"],
-            plan_code=data["plan_code"],
-            trial_available=data["trial_available"],
+        Deliberately a distinct call rather than a shared one: it bypasses
+        the advertising the service runs on, so it should be obvious in the
+        code and traceable in the head's records.
+        """
+        data = await self._post("/api/v1/admin/grant-access", {"user_id": user_id})
+        return Account(
+            user_id=data["user_id"],
+            access_active=data["access_active"],
+            access_seconds_remaining=data["access_seconds_remaining"],
+            access_is_grace=data["access_is_grace"],
         )
 
     # --- outbox ---------------------------------------------------------

@@ -32,7 +32,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models.plan import Subscription
 from app.db.models.user import (
     AuthIdentity,
     AuthProvider,
@@ -265,11 +264,11 @@ def merge_accounts(db: Session, *, keep: User, absorb: User) -> User:
     Which account survives is the caller's choice; *what* survives is decided
     here, and two rules matter:
 
-    * Everything the absorbed account paid for moves across. Losing a
-      subscription because someone tapped "link account" would be the worst
-      possible outcome of a convenience feature.
-    * `trial_used_at` becomes the earliest of the two. Taking the latest — or
-      dropping it — would turn merging into a way to farm free trials.
+    * Time bought with ads moves across, taking the later expiry. Losing an
+      hour someone watched an ad for because they tapped "link account"
+      would be the worst possible outcome of a convenience feature.
+    * The grace cooldown takes the *later* of the two, so merging cannot
+      hand back a fallback the absorbed account has just used.
 
     Assignments are deliberately *not* moved: a config belongs to the device
     holding it, both devices keep working, and the next placement sweep
@@ -290,15 +289,22 @@ def merge_accounts(db: Session, *, keep: User, absorb: User) -> User:
     for session in list(absorb.sessions):
         keep.sessions.append(session)
 
-    # Subscriptions and link codes have no relationship on User, so nothing
-    # cascades to them and reassigning the key is enough.
-    for sub in db.scalars(select(Subscription).where(Subscription.user_id == absorb.id)).all():
-        sub.user_id = keep.id
+    # Link codes have no relationship on User, so nothing cascades to
+    # them and reassigning the key is enough.
     for link in db.scalars(select(LinkCode).where(LinkCode.user_id == absorb.id)).all():
         link.user_id = keep.id
 
-    trials = [t for t in (as_aware(keep.trial_used_at), as_aware(absorb.trial_used_at)) if t]
-    keep.trial_used_at = min(trials) if trials else None
+    # Access is time, so the merged account keeps whichever expiry is later
+    # — the two stretches were bought separately and both were paid for.
+    expiries = [t for t in (as_aware(keep.access_expires_at), as_aware(absorb.access_expires_at)) if t]
+    if expiries:
+        keep.access_expires_at = max(expiries)
+        keep.access_is_grace = keep.access_is_grace and absorb.access_is_grace
+
+    # The grace cooldown takes the *later* of the two: merging must not
+    # hand back a fallback the absorbed account just used.
+    graces = [t for t in (as_aware(keep.grace_granted_at), as_aware(absorb.grace_granted_at)) if t]
+    keep.grace_granted_at = max(graces) if graces else None
 
     if absorb.status == UserStatus.banned:
         # A ban must not be shakeable by merging into a clean account.

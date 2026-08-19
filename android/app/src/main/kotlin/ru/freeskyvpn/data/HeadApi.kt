@@ -9,6 +9,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import ru.freeskyvpn.BuildConfig
 import ru.freeskyvpn.core.Account
+import ru.freeskyvpn.core.AdTicket
 import ru.freeskyvpn.core.ConnectionConfig
 import ru.freeskyvpn.core.DeviceRegistration
 import ru.freeskyvpn.core.FailureOutcome
@@ -60,7 +61,20 @@ class HeadApi(private val storage: Storage) {
 
     suspend fun account(): Account = get("/api/v1/me")
 
-    suspend fun startTrial(): Account = post("/api/v1/me/trial", "{}")
+    /** Ask for the token that will be handed back when the ad finishes. */
+    suspend fun prepareAd(): AdTicket = post("/api/v1/me/ad/prepare", "{}")
+
+    /** Claim the hour. The token is single-use and short-lived. */
+    suspend fun completeAd(nonce: String): Account =
+        post("/api/v1/me/ad/complete", json.encodeToString(mapOf("nonce" to nonce)))
+
+    /**
+     * Tell the head no ad could be shown, and take the fallback.
+     *
+     * Rate limited server-side, so a 429 here is expected rather than
+     * exceptional — it means the fallback was already used recently.
+     */
+    suspend fun adUnavailable(): Account = post("/api/v1/me/ad/unavailable", "{}")
 
     suspend fun startLink(): LinkCode = post("/api/v1/me/link/start", "{}")
 

@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.db.models.plan import Subscription, SubscriptionType
 from app.db.models.user import (
     AuthIdentity,
     AuthProvider,
@@ -235,60 +234,72 @@ def test_linking_to_an_existing_telegram_account_merges_the_two(db):
     assert user_auth.authenticate(db, app_issued.token).id == bot_user.id
 
 
-def test_a_merge_carries_the_subscription_across(db):
-    """Losing what someone paid for would be the worst possible outcome of
-    tapping "link account"."""
+def test_a_merge_carries_the_bought_access_across(db):
+    """Losing an hour someone watched an ad for, because they tapped "link
+    account", would be the worst possible outcome of a convenience feature."""
     bot_user = make_user(db)
     db.add(
         AuthIdentity(user_id=bot_user.id, provider=AuthProvider.telegram, provider_uid="555")
     )
     app_user = make_user(db)
-    expires = datetime.now(UTC) + timedelta(days=20)
-    db.add(
-        Subscription(
-            user_id=app_user.id,
-            type=SubscriptionType.paid,
-            started_at=datetime.now(UTC),
-            expires_at=expires,
-        )
-    )
+    expires = datetime.now(UTC) + timedelta(hours=3)
+    app_user.access_expires_at = expires
     db.commit()
 
     survivor = user_auth.redeem_link(db, user_auth.start_link(db, app_user).code, "555")
     db.commit()
 
-    subs = db.query(Subscription).filter_by(user_id=survivor.id).all()
-    assert len(subs) == 1
+    from app.services.timeutil import as_aware
+
+    assert as_aware(survivor.access_expires_at) == expires
 
 
-def test_merging_cannot_hand_back_a_used_trial(db):
-    """Otherwise "link account" becomes a way to farm free weeks."""
-    used_at = datetime.now(UTC) - timedelta(days=30)
+def test_merging_cannot_hand_back_a_used_fallback(db):
+    """Otherwise "link account" becomes a way to reset the grace cooldown."""
     keep = make_user(db)
-    keep.trial_used_at = None
     absorb = make_user(db)
-    absorb.trial_used_at = used_at
+    absorb.grace_granted_at = datetime.now(UTC) - timedelta(minutes=5)
     db.commit()
 
     survivor = user_auth.merge_accounts(db, keep=keep, absorb=absorb)
     db.commit()
 
-    assert survivor.trial_used_at is not None
+    assert survivor.grace_granted_at is not None
 
 
-def test_merging_keeps_the_earliest_trial_date(db):
-    older = datetime.now(UTC) - timedelta(days=60)
-    newer = datetime.now(UTC) - timedelta(days=5)
+def test_merging_keeps_the_later_grace_use(db):
+    from app.services.timeutil import as_aware
+
+    older = datetime.now(UTC) - timedelta(hours=20)
+    newer = datetime.now(UTC) - timedelta(hours=1)
     keep = make_user(db)
-    keep.trial_used_at = newer
+    keep.grace_granted_at = older
     absorb = make_user(db)
-    absorb.trial_used_at = older
+    absorb.grace_granted_at = newer
     db.commit()
 
     survivor = user_auth.merge_accounts(db, keep=keep, absorb=absorb)
     db.commit()
 
-    assert survivor.trial_used_at.replace(tzinfo=UTC) == older
+    assert as_aware(survivor.grace_granted_at) == newer
+
+
+def test_merging_keeps_the_later_access_expiry(db):
+    """Both stretches were paid for; the merged account keeps the longer."""
+    from app.services.timeutil import as_aware
+
+    soon = datetime.now(UTC) + timedelta(minutes=20)
+    later = datetime.now(UTC) + timedelta(hours=5)
+    keep = make_user(db)
+    keep.access_expires_at = soon
+    absorb = make_user(db)
+    absorb.access_expires_at = later
+    db.commit()
+
+    survivor = user_auth.merge_accounts(db, keep=keep, absorb=absorb)
+    db.commit()
+
+    assert as_aware(survivor.access_expires_at) == later
 
 
 def test_a_ban_survives_a_merge(db):

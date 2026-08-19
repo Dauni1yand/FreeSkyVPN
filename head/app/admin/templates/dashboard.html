@@ -12,8 +12,10 @@
     <div class="n">{{ s.nodes_degraded }} через туннель, {{ s.nodes_isolated }} изолировано</div></div>
   <div class="stat"><div class="k">Пользователи</div><div class="v num">{{ s.users_total }}</div>
     <div class="n">{{ s.users_connected }} с активным конфигом</div></div>
-  <div class="stat"><div class="k">Подписки</div><div class="v num">{{ s.subs_paid }}</div>
-    <div class="n">{{ s.subs_trial }} на триале</div></div>
+  <div class="stat"><div class="k">Доступ активен</div><div class="v num">{{ s.access_live }}</div>
+    <div class="n">оплачен рекламой</div></div>
+  <div class="stat"><div class="k">Реклама за сутки</div><div class="v num">{{ s.ads_24h }}</div>
+    <div class="n">{{ s.grace_24h }} запасных выдач</div></div>
   <div class="stat"><div class="k">Инбаунды</div><div class="v num">{{ s.inbounds_active }}</div>
     <div class="n">{{ s.inbounds_dead }} мёртвых</div></div>
   <div class="stat"><div class="k">Ёмкость</div>

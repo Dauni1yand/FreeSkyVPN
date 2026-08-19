@@ -11,9 +11,6 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""
     telegram_admin_chat_id: str = ""
-    # Only used to tell the app whether to show the buy button; the
-    # payment flow itself lives in the bot.
-    payment_provider_token: str = ""
 
     # control-channel resilience thresholds (see app/node_manager/channel.py)
     node_channel_primary_timeout_s: float = 3.0
@@ -116,11 +113,27 @@ class Settings(BaseSettings):
     # empty just means the app names no bot.
     telegram_bot_username: str = ""
 
-    # --- tiering (phase 4) ---
+    # --- access, bought with attention (app/services/access.py) ---
+    # What one completed rewarded video buys.
+    ad_reward_minutes: int = 60
+    # Ceiling on banked access, so nobody stacks a month in one sitting.
+    access_max_hours: int = 24
+    # How long the client has to finish an ad after asking for a token.
+    ad_nonce_ttl_minutes: int = 15
+    # Once the ad network's server-to-server callback is wired up, set this
+    # and the head stops believing the client about what it watched.
+    ad_ssv_required: bool = False
+
+    # Fallback when no ad can be delivered. Fill rates are not 100% and a
+    # network can be down; without this our outage is total, because a VPN
+    # that will not connect is not a degraded VPN. Lands on the lower
+    # priority class and is rate limited, so it cannot become the way to
+    # skip the ad. Set to 0 to fail closed instead.
+    access_grace_minutes: int = 15
+    access_grace_interval_hours: int = 6
+
+    # How often lapsed users are moved down to the grace class.
     tier_reconcile_interval_minutes: int = 30
-    # Rate a free node is shaped to at provisioning time. Recorded on the node
-    # row so the head can report what free actually gets.
-    free_node_shaped_mbit: int = 10
 
 
 @lru_cache

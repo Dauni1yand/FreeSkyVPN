@@ -11,7 +11,7 @@ from app.db.base import Base
 class PushReason(str, enum.Enum):
     inbound_blocked = "inbound_blocked"  # the inbound was declared dead for everyone on it
     node_burned = "node_burned"  # the whole node was declared burned, users moved elsewhere
-    tier_changed = "tier_changed"  # the user paid or their subscription lapsed, so their node changed
+    tier_changed = "tier_changed"  # the user watched an ad or their hour lapsed, so their class changed
 
 
 class ConfigPush(Base):

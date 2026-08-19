@@ -8,6 +8,7 @@ from app.db.models.node import (
 )
 from app.node_manager.exceptions import NodeUnreachableError
 from app.services.config_selector import NoCapacityError, assign_config, eligible_nodes
+from app.services.tiers import Tier, ports_for
 from tests.factories import (
     make_assignment,
     make_inbound,
@@ -20,7 +21,11 @@ from tests.factories import (
 def test_assign_reuses_an_existing_live_inbound(db, pushes):
     seed_snis(db)
     node = make_node(db)
-    inbound = make_inbound(db, node)
+    # A user who has not watched an ad belongs in the grace class, so the
+    # inbound to be reused has to be one of that class's ports — the
+    # selector will not put them on a full-class inbound just because it
+    # happens to be free.
+    inbound = make_inbound(db, node, port=ports_for(Tier.grace)[0])
     user = make_user(db)
 
     config = assign_config(db, user)

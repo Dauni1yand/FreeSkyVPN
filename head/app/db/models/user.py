@@ -2,7 +2,16 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -37,7 +46,19 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     status: Mapped[UserStatus] = mapped_column(Enum(UserStatus, name="user_status"), default=UserStatus.active)
-    trial_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # When the time bought with the last rewarded ad runs out. Null means
+    # never bought any. This is the entire entitlement model: access is not
+    # a status somebody holds, it is a stretch of time paid for with
+    # attention (app/services/access.py).
+    access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # True when the current stretch came from the fallback rather than from
+    # a watched ad, which puts the user on the lower-priority class.
+    access_is_grace: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Rate-limits the fallback: "the ad failed" is a claim the client makes
+    # about itself, and without a limit it is the cheapest way never to see
+    # one.
+    grace_granted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     auth_identities: Mapped[list["AuthIdentity"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -115,6 +136,30 @@ class LinkCode(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
     code: Mapped[str] = mapped_column(String(12), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AdNonce(Base):
+    """A single-use token tying one rewarded view to one grant of access.
+
+    Without it, a single recorded HTTP call would be an unlimited access
+    generator: replay "I watched an ad" forever and never watch one. The
+    token has to be issued by the head moments before, is spent on
+    redemption and expires quickly.
+
+    This is friction rather than security — a modified client can still
+    request a token and claim the reward without showing anything. The real
+    control is the ad network's server-to-server callback; see
+    `access.redeem_verified` and the `AD_SSV_REQUIRED` setting.
+    """
+
+    __tablename__ = "ad_nonces"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
+    nonce: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

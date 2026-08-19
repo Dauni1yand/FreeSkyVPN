@@ -37,16 +37,35 @@ data class FailureOutcome(
     @SerialName("users_migrated") val usersMigrated: Int = 0,
 )
 
+/**
+ * The account, which under this model is mostly "how much time is left".
+ *
+ * The service is funded entirely by advertising: one completed rewarded
+ * video buys one hour. There is no subscription and no free tier, so
+ * [accessSecondsRemaining] is what the connect button is gated on.
+ */
 @Serializable
 data class Account(
     @SerialName("user_id") val userId: String,
     @SerialName("telegram_linked") val telegramLinked: Boolean = false,
-    @SerialName("subscription_active") val subscriptionActive: Boolean = false,
-    @SerialName("subscription_type") val subscriptionType: String? = null,
-    @SerialName("expires_at") val expiresAt: String? = null,
-    @SerialName("trial_available") val trialAvailable: Boolean = false,
-    /** False while the server has no payment provider; the app hides the buy button. */
-    @SerialName("payments_available") val paymentsAvailable: Boolean = false,
+    @SerialName("access_active") val accessActive: Boolean = false,
+    @SerialName("access_expires_at") val accessExpiresAt: String? = null,
+    @SerialName("access_seconds_remaining") val accessSecondsRemaining: Int = 0,
+    /**
+     * True when the current stretch was handed out because no ad could be
+     * delivered. Worth surfacing: that traffic sits in the lower-priority
+     * class, so the user has a real reason for it feeling slower.
+     */
+    @SerialName("access_is_grace") val accessIsGrace: Boolean = false,
+    /** What the next completed ad will buy. */
+    @SerialName("ad_reward_minutes") val adRewardMinutes: Int = 60,
+)
+
+/** The single-use token returned once a rewarded ad finishes. */
+@Serializable
+data class AdTicket(
+    val nonce: String,
+    @SerialName("reward_minutes") val rewardMinutes: Int = 60,
 )
 
 @Serializable

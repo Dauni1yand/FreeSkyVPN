@@ -14,7 +14,6 @@ from app.api.routers import (
     nodes,
     pushes,
     sni,
-    subscriptions,
     users,
     xray_updates,
 )
@@ -67,7 +66,6 @@ app.include_router(users.router)
 app.include_router(me.router)
 app.include_router(nodes.router)
 app.include_router(connect.router)
-app.include_router(subscriptions.router)
 app.include_router(pushes.router)
 app.include_router(sni.router)
 app.include_router(xray_updates.router)

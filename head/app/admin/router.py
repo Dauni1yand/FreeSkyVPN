@@ -21,7 +21,7 @@ from app.admin.deps import CurrentAdmin, redirect_with_flash, render
 from app.api.deps import DbSession
 from app.config import get_settings
 from app.db.models.admin import AdminAudit
-from app.db.models.logs import FailReport, NodeChannelEvent
+from app.db.models.logs import AdView, FailReport, NodeChannelEvent
 from app.db.models.node import (
     Assignment,
     Inbound,
@@ -33,10 +33,9 @@ from app.db.models.node import (
     SniProbe,
 )
 from app.db.models.outbox import ConfigPush
-from app.db.models.plan import Plan, Subscription, SubscriptionType
 from app.db.models.update import NodeUpdate, NodeUpdateStatus
 from app.db.models.user import AuthIdentity, User, UserStatus
-from app.services import provisioning, xray_updates
+from app.services import access, provisioning, xray_updates
 from app.services.admin_auth import (
     SESSION_COOKIE,
     audit,
@@ -50,9 +49,7 @@ from app.services.sni_discovery import (
     refresh_candidates,
 )
 from app.services.ssh_manager import SshError
-from app.services.subscriptions import current_subscription
 from app.services.tiering import reconcile_placement
-from app.services.timeutil import as_aware
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"], include_in_schema=False)
@@ -128,9 +125,7 @@ def dashboard(request: Request, db: DbSession, admin: CurrentAdmin):
         node.load = loads.get(node.id, 0)
 
     now = datetime.now(UTC)
-    live_subs = [
-        s for s in db.scalars(select(Subscription)).all() if (as_aware(s.expires_at) or now) > now
-    ]
+    day_ago = now - timedelta(hours=24)
 
     stats = {
         "nodes_total": len(nodes),
@@ -143,8 +138,19 @@ def dashboard(request: Request, db: DbSession, admin: CurrentAdmin):
         "users_connected": db.scalar(
             select(func.count()).select_from(Assignment).where(Assignment.released_at.is_(None))
         ) or 0,
-        "subs_paid": sum(1 for s in live_subs if s.type == SubscriptionType.paid),
-        "subs_trial": sum(1 for s in live_subs if s.type == SubscriptionType.trial),
+        # Users whose ad-bought hour is still running. This is the number
+        # the whole business model turns on, so it sits next to capacity.
+        "access_live": db.scalar(
+            select(func.count()).select_from(User).where(User.access_expires_at > now)
+        ) or 0,
+        "ads_24h": db.scalar(
+            select(func.count()).select_from(AdView).where(AdView.watched_at >= day_ago)
+        ) or 0,
+        "grace_24h": db.scalar(
+            select(func.count())
+            .select_from(AdView)
+            .where(AdView.watched_at >= day_ago, AdView.source == "grace")
+        ) or 0,
         "inbounds_active": db.scalar(
             select(func.count()).select_from(Inbound).where(Inbound.state == InboundState.active)
         ) or 0,
@@ -348,9 +354,10 @@ def users_page(request: Request, db: DbSession, admin: CurrentAdmin, q: str | No
         user.identities = db.scalars(
             select(AuthIdentity).where(AuthIdentity.user_id == user.id)
         ).all()
-        sub = current_subscription(db, user)
-        user.sub_type = sub.type.value if sub else None
-        user.sub_expires = as_aware(sub.expires_at) if sub else None
+        state = access.state_of(user)
+        user.access_active = state.active
+        user.access_expires = state.expires_at
+        user.access_is_grace = state.is_grace
 
         assignment = db.scalar(
             select(Assignment)
@@ -361,7 +368,7 @@ def users_page(request: Request, db: DbSession, admin: CurrentAdmin, q: str | No
             inbound = db.get(Inbound, assignment.inbound_id)
             node = db.get(Node, inbound.node_id)
             user.node_host = node.host
-            # The tier is the inbound's: nodes serve both audiences.
+            # The class is the inbound's: nodes serve everyone.
             user.node_tier = inbound.tier.value
         else:
             user.node_host = None
@@ -374,57 +381,48 @@ def users_page(request: Request, db: DbSession, admin: CurrentAdmin, q: str | No
 
 
 @router.post("/users/{user_id}/grant")
-def grant_subscription(db: DbSession, admin: CurrentAdmin, user_id: uuid.UUID, days: FormInt = 30):
+def grant_access(db: DbSession, admin: CurrentAdmin, user_id: uuid.UUID, hours: FormInt = 24):
+    """Give someone access without an ad.
+
+    Measured in hours rather than days because that is the unit the product
+    now runs on, and recorded as an AdView with the operator's name in its
+    source — a gap between ads watched and hours served should always be
+    answerable.
+    """
     user = db.get(User, user_id)
     if user is None:
         return redirect_with_flash("/admin/users", "err", "Пользователь не найден")
+    if hours < 1:
+        return redirect_with_flash("/admin/users", "err", "Минимум час")
 
-    now = datetime.now(UTC)
-    existing = current_subscription(db, user)
-    if existing is not None and existing.type == SubscriptionType.paid:
-        # Extend rather than replace, matching how a real renewal behaves.
-        existing.expires_at = (as_aware(existing.expires_at) or now) + timedelta(days=days)
-    else:
-        db.add(
-            Subscription(
-                user_id=user.id,
-                plan_id=None,
-                type=SubscriptionType.paid,
-                expires_at=now + timedelta(days=days),
-            )
-        )
-    db.flush()
+    access.grant_manual(db, user, hours * 60, by=admin)
 
     try:
         reconcile_placement(db, user)
     except NoCapacityError:
-        logger.warning("granted user %s has no paid node available yet", user.id)
+        logger.warning("granted user %s has no full-class node available yet", user.id)
 
-    audit(db, admin, "user.grant", str(user.id), f"+{days}d")
+    audit(db, admin, "user.grant", str(user.id), f"+{hours}h")
     db.commit()
-    return redirect_with_flash("/admin/users", "ok", f"Выдано {days} дн. подписки.")
+    return redirect_with_flash("/admin/users", "ok", f"Выдано {hours} ч. доступа.")
 
 
 @router.post("/users/{user_id}/revoke")
-def revoke_subscription(db: DbSession, admin: CurrentAdmin, user_id: uuid.UUID):
+def revoke_access(db: DbSession, admin: CurrentAdmin, user_id: uuid.UUID):
     user = db.get(User, user_id)
     if user is None:
         return redirect_with_flash("/admin/users", "err", "Пользователь не найден")
 
-    now = datetime.now(UTC)
-    for sub in db.scalars(select(Subscription).where(Subscription.user_id == user.id)).all():
-        if (as_aware(sub.expires_at) or now) > now:
-            sub.expires_at = now
-    db.flush()
+    access.revoke(db, user)
 
     try:
         reconcile_placement(db, user)
     except NoCapacityError:
-        logger.warning("revoked user %s has no free node available yet", user.id)
+        logger.warning("revoked user %s has no grace-class node available yet", user.id)
 
     audit(db, admin, "user.revoke", str(user.id))
     db.commit()
-    return redirect_with_flash("/admin/users", "ok", "Подписка отозвана.")
+    return redirect_with_flash("/admin/users", "ok", "Доступ отозван.")
 
 
 @router.post("/users/{user_id}/ban")
@@ -438,64 +436,6 @@ def ban_user(db: DbSession, admin: CurrentAdmin, user_id: uuid.UUID, banned: For
     db.commit()
     return redirect_with_flash(
         "/admin/users", "ok", "Пользователь заблокирован." if banned == "1" else "Блокировка снята."
-    )
-
-
-# --- plans ---------------------------------------------------------------
-
-
-@router.get("/plans")
-def plans_page(request: Request, db: DbSession, admin: CurrentAdmin):
-    plans = list(db.scalars(select(Plan).order_by(Plan.duration_days)).all())
-    counts = dict(
-        db.execute(
-            select(Subscription.plan_id, func.count()).group_by(Subscription.plan_id)
-        ).all()
-    )
-    for plan in plans:
-        plan.sub_count = counts.get(plan.id, 0)
-        plan.price = float(plan.price)
-    return render(request, "plans.html", admin, page="plans", plans=plans)
-
-
-@router.post("/plans/add")
-def add_plan(
-    db: DbSession,
-    admin: CurrentAdmin,
-    code: FormStr,
-    name: FormStr,
-    duration_days: FormInt,
-    max_devices: FormInt,
-    price: Annotated[float, Form()],
-):
-    if db.scalar(select(Plan).where(Plan.code == code.strip())):
-        return redirect_with_flash("/admin/plans", "err", f"Тариф с кодом {code} уже есть")
-
-    db.add(
-        Plan(
-            code=code.strip(),
-            name=name.strip(),
-            duration_days=duration_days,
-            max_devices=max_devices,
-            price=price,
-        )
-    )
-    audit(db, admin, "plan.add", code)
-    db.commit()
-    return redirect_with_flash("/admin/plans", "ok", f"Тариф {code} добавлен.")
-
-
-@router.post("/plans/{plan_id}/toggle")
-def toggle_plan(db: DbSession, admin: CurrentAdmin, plan_id: uuid.UUID):
-    plan = db.get(Plan, plan_id)
-    if plan is None:
-        return redirect_with_flash("/admin/plans", "err", "Тариф не найден")
-
-    plan.active = not plan.active
-    audit(db, admin, "plan.toggle", plan.code, str(plan.active))
-    db.commit()
-    return redirect_with_flash(
-        "/admin/plans", "ok", f"Тариф {plan.code} {'показан' if plan.active else 'скрыт'}."
     )
 
 

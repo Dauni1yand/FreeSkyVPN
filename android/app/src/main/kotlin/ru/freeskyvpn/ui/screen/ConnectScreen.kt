@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ru.freeskyvpn.ui.theme.Metrics
 import ru.freeskyvpn.ui.theme.SystemGreen
+import ru.freeskyvpn.ui.theme.SystemOrange
 import ru.freeskyvpn.vpn.VpnSnapshot
 import ru.freeskyvpn.vpn.VpnStatus
 
@@ -42,17 +43,27 @@ import ru.freeskyvpn.vpn.VpnStatus
  * The whole product, on one screen.
  *
  * There is no server list and no country picker — choosing a node is the
- * head's job. What is left is one button that is either on or off, a line of
- * status underneath it, and the two escape hatches: "не работает" and the
- * account. Anything else added here should have to justify itself against
- * that.
+ * head's job. What is left is one button, a line of status, and the two
+ * escape hatches: "не работает" and the account.
+ *
+ * The button carries one more thing now. The service is funded entirely by
+ * advertising, so with no time bought it reads "Смотреть рекламу" and the
+ * ad happens as part of the tap rather than as a separate errand. Making
+ * the user find a "watch ad" button, wait, and then find the connect button
+ * again would be two chores where the product promises one.
  */
 @Composable
 fun ConnectScreen(
     vpn: VpnSnapshot,
     busy: Boolean,
+    watchingAd: Boolean,
+    hasAccess: Boolean,
+    remainingLabel: String,
+    runningLow: Boolean,
+    isGrace: Boolean,
     splitTunnelActive: Boolean,
     onToggle: () -> Unit,
+    onExtend: () -> Unit,
     onReportFailure: () -> Unit,
     onOpenAccount: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -68,12 +79,29 @@ fun ConnectScreen(
 
         Spacer(Modifier.weight(1f))
 
-        PowerButton(status = vpn.status, busy = busy, onClick = onToggle)
+        PowerButton(
+            status = vpn.status,
+            busy = busy || watchingAd,
+            hasAccess = hasAccess,
+            onClick = onToggle,
+        )
 
         Spacer(Modifier.height(28.dp))
-        StatusLine(vpn)
+        StatusLine(vpn = vpn, hasAccess = hasAccess, watchingAd = watchingAd)
+
+        if (hasAccess) {
+            Spacer(Modifier.height(14.dp))
+            RemainingLine(remainingLabel = remainingLabel, runningLow = runningLow, isGrace = isGrace)
+        }
 
         Spacer(Modifier.weight(1f))
+
+        // Only once the hour is nearly up. Offering it at fifty minutes
+        // would be asking for attention we have already been paid for.
+        if (runningLow) {
+            PrimaryButton(text = "Продлить ещё на час", onClick = onExtend)
+            Spacer(Modifier.height(Metrics.itemSpacing))
+        }
 
         if (splitTunnelActive) {
             SplitTunnelHint(vpn.bypassedApps)
@@ -123,7 +151,12 @@ private fun IconTextButton(text: String, onClick: () -> Unit) {
  * colour alone is not a state anyone should have to interpret.
  */
 @Composable
-private fun PowerButton(status: VpnStatus, busy: Boolean, onClick: () -> Unit) {
+private fun PowerButton(
+    status: VpnStatus,
+    busy: Boolean,
+    hasAccess: Boolean,
+    onClick: () -> Unit,
+) {
     val connected = status == VpnStatus.Connected
     val working = busy || status == VpnStatus.Connecting
 
@@ -161,8 +194,17 @@ private fun PowerButton(status: VpnStatus, busy: Boolean, onClick: () -> Unit) {
             )
         } else {
             Text(
-                text = if (connected) "Вкл" else "Выкл",
-                style = MaterialTheme.typography.headlineLarge,
+                // Three states, not two: without a bought hour the button's
+                // job is to start an ad, and saying "Выкл" there would hide
+                // what tapping it actually does.
+                text = when {
+                    connected -> "Вкл"
+                    !hasAccess -> "Смотреть\nрекламу"
+                    else -> "Выкл"
+                },
+                style = if (connected || hasAccess) MaterialTheme.typography.headlineLarge
+                        else MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center,
                 color = if (connected) Color.Black.copy(alpha = 0.85f)
                         else MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -171,17 +213,21 @@ private fun PowerButton(status: VpnStatus, busy: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun StatusLine(vpn: VpnSnapshot) {
-    val headline = when (vpn.status) {
-        VpnStatus.Connected -> "Защищено"
-        VpnStatus.Connecting -> "Подключаюсь"
-        VpnStatus.Failed -> "Не подключилось"
-        VpnStatus.Disconnected -> "Отключено"
+private fun StatusLine(vpn: VpnSnapshot, hasAccess: Boolean, watchingAd: Boolean) {
+    val headline = when {
+        watchingAd -> "Реклама"
+        vpn.status == VpnStatus.Connected -> "Защищено"
+        vpn.status == VpnStatus.Connecting -> "Подключаюсь"
+        vpn.status == VpnStatus.Failed -> "Не подключилось"
+        else -> "Отключено"
     }
-    val detail = when (vpn.status) {
-        VpnStatus.Connected -> vpn.nodeCountry?.uppercase()?.let { "Сервер $it" }
-        VpnStatus.Failed -> vpn.message
-        VpnStatus.Disconnected -> "Нажмите, чтобы подключиться"
+    val detail = when {
+        watchingAd -> "Один ролик открывает час доступа"
+        vpn.status == VpnStatus.Connected -> vpn.nodeCountry?.uppercase()?.let { "Сервер $it" }
+        vpn.status == VpnStatus.Failed -> vpn.message
+        vpn.status == VpnStatus.Disconnected && !hasAccess ->
+            "Ролик оплачивает час — подписки нет"
+        vpn.status == VpnStatus.Disconnected -> "Нажмите, чтобы подключиться"
         else -> null
     }
 
@@ -200,6 +246,31 @@ private fun StatusLine(vpn: VpnSnapshot) {
 }
 
 @Composable
+private fun RemainingLine(remainingLabel: String, runningLow: Boolean, isGrace: Boolean) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = "Осталось $remainingLabel",
+            style = MaterialTheme.typography.titleMedium,
+            color = when {
+                runningLow -> SystemOrange
+                isGrace -> SystemOrange
+                else -> SystemGreen
+            },
+        )
+        if (isGrace) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Запасной доступ: рекламу показать не удалось",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+
+@Composable
 private fun SplitTunnelHint(bypassedApps: Int) {
     val suffix = if (bypassedApps > 0) " · $bypassedApps ${plural(bypassedApps)} в обход" else ""
     Text(
@@ -215,19 +286,4 @@ private fun plural(n: Int): String = when {
     n % 10 == 1 && n % 100 != 11 -> "приложение"
     n % 10 in 2..4 && n % 100 !in 12..14 -> "приложения"
     else -> "приложений"
-}
-
-@Composable
-internal fun SecondaryButton(text: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(Metrics.rowHeight)
-            .clip(RoundedCornerShape(Metrics.cardCorner))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text, style = MaterialTheme.typography.labelLarge)
-    }
 }

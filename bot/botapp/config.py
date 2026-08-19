@@ -17,10 +17,13 @@ class Settings(BaseSettings):
     # must match HEAD_SECRET_KEY on the head (see head/app/api/auth.py)
     head_service_token: str = ""
 
-    # Telegram Payments provider token, issued via @BotFather -> Payments.
-    # Empty disables the buy flow, leaving the trial and free tier usable —
-    # handy for running the bot before payments are set up.
-    payment_provider_token: str = ""
+    # Chats allowed to get online through the bot, comma separated.
+    #
+    # The bot cannot show rewarded video — no such SDK exists for bots — so
+    # it cannot take part in what pays for the servers, and unrestricted
+    # access through it would be the free tier this service deliberately
+    # does not have. The admin chat is always allowed on top of this.
+    telegram_allowed_chat_ids: str = ""
 
     # how often the outbox worker drains pending config pushes
     outbox_poll_seconds: int = 15

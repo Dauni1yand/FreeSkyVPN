@@ -2,8 +2,15 @@
 
 Every handler is a thin translation between a Telegram interaction and one
 head API call. Any decision worth making — which server, whether a config
-is dead, what a payment entitles someone to — is made by the head, so that
-the Android client in phase 5 inherits identical behaviour for free.
+is dead, whether someone may connect — is made by the head.
+
+What the bot is *for* changed when the service became ad-funded. Telegram
+bots cannot show rewarded video; no such SDK exists. So the bot cannot
+participate in the economy that pays for the servers, and any access it
+hands out is a hole around the advertising. It is therefore a tool for
+testing and support, and granting access through it is restricted to the
+accounts named in TELEGRAM_ALLOWED_CHAT_IDS. Everyone else is pointed at
+the app.
 """
 
 from __future__ import annotations
@@ -12,12 +19,7 @@ import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import (
-    CallbackQuery,
-    LabeledPrice,
-    Message,
-    PreCheckoutQuery,
-)
+from aiogram.types import CallbackQuery, Message
 
 from botapp import keyboards, texts
 from botapp.api_client import HeadApi, HeadApiError
@@ -79,7 +81,13 @@ async def on_connect(callback: CallbackQuery, api: HeadApi) -> None:
         config = await api.connect(user_id)
     except HeadApiError as exc:
         logger.warning("connect failed for %s: %s", callback.from_user.id, exc)
-        text = texts.NO_CAPACITY if exc.status_code == 503 else texts.GENERIC_ERROR
+        # 402 means the account has no hour bought. From the bot there is no
+        # way to buy one — rewarded video needs the app — so this is a
+        # signpost rather than an error.
+        text = {
+            402: texts.NEEDS_AN_AD,
+            503: texts.NO_CAPACITY,
+        }.get(exc.status_code, texts.GENERIC_ERROR)
         await callback.message.answer(text, reply_markup=keyboards.main_menu())
         return
 
@@ -115,97 +123,6 @@ async def on_report_failure(callback: CallbackQuery, api: HeadApi) -> None:
     await callback.message.answer(
         texts.failure_handled(result.config.vless_url, result.inbound_declared_dead),
         reply_markup=keyboards.main_menu(),
-    )
-
-
-@router.callback_query(F.data == keyboards.CB_SUBSCRIPTION)
-async def on_subscription(callback: CallbackQuery, api: HeadApi) -> None:
-    await callback.answer()
-    user_id = await _user_id(api, callback.from_user.id)
-
-    subscription = await api.subscription(user_id)
-    plans = await api.plans() if get_settings().payment_provider_token else []
-
-    await callback.message.edit_text(
-        texts.subscription_status(subscription.active, subscription.type, subscription.expires_at),
-        reply_markup=keyboards.subscription_menu(
-            plans, trial_available=subscription.trial_available
-        ),
-    )
-
-
-@router.callback_query(F.data == keyboards.CB_TRIAL)
-async def on_trial(callback: CallbackQuery, api: HeadApi) -> None:
-    await callback.answer()
-    user_id = await _user_id(api, callback.from_user.id)
-
-    try:
-        subscription = await api.start_trial(user_id)
-    except HeadApiError as exc:
-        if exc.status_code == 409:
-            await callback.message.answer(texts.TRIAL_ALREADY_USED)
-            return
-        raise
-
-    await callback.message.answer(
-        texts.trial_started(subscription.expires_at), reply_markup=keyboards.main_menu()
-    )
-
-
-@router.callback_query(F.data.startswith(keyboards.CB_BUY_PREFIX))
-async def on_buy(callback: CallbackQuery, api: HeadApi) -> None:
-    await callback.answer()
-    settings = get_settings()
-    if not settings.payment_provider_token:
-        await callback.message.answer(texts.PAYMENTS_DISABLED)
-        return
-
-    plan_code = callback.data.removeprefix(keyboards.CB_BUY_PREFIX)
-    plan = next((p for p in await api.plans() if p.code == plan_code), None)
-    if plan is None:
-        await callback.message.answer(texts.GENERIC_ERROR)
-        return
-
-    await callback.message.answer_invoice(
-        title=plan.name,
-        description=texts.invoice_description(plan.name, plan.duration_days),
-        # Telegram echoes the payload back on success — it is how the
-        # successful_payment handler knows which plan was bought.
-        payload=f"plan:{plan.code}",
-        provider_token=settings.payment_provider_token,
-        currency=plan.currency,
-        # Telegram prices are in minor units. `round`, not `int`: for prices
-        # whose float lands just under the cent (1.13 * 100 == 112.999…),
-        # truncating would undercharge by a kopeck.
-        prices=[LabeledPrice(label=plan.name, amount=round(plan.price * 100))],
-    )
-
-
-@router.pre_checkout_query()
-async def on_pre_checkout(query: PreCheckoutQuery) -> None:
-    # Telegram requires an answer within 10 seconds or the payment fails.
-    # Nothing here can legitimately reject a purchase, so always approve.
-    await query.answer(ok=True)
-
-
-@router.message(F.successful_payment)
-async def on_successful_payment(message: Message, api: HeadApi) -> None:
-    payment = message.successful_payment
-    plan_code = payment.invoice_payload.removeprefix("plan:")
-    user_id = await _user_id(api, message.from_user.id)
-
-    subscription = await api.confirm_payment(
-        user_id=user_id,
-        plan_code=plan_code,
-        # Telegram's own charge id — the head uses it to make a repeated
-        # notification a no-op rather than a second month.
-        provider_payment_id=payment.telegram_payment_charge_id,
-        amount=payment.total_amount / 100,
-        currency=payment.currency,
-    )
-
-    await message.answer(
-        texts.payment_succeeded(subscription.expires_at), reply_markup=keyboards.main_menu()
     )
 
 
@@ -266,3 +183,47 @@ async def on_update_approve(callback: CallbackQuery, api: HeadApi) -> None:
 @router.callback_query(F.data.startswith(keyboards.CB_UPD_DECLINE_PREFIX))
 async def on_update_decline(callback: CallbackQuery, api: HeadApi) -> None:
     await _decide_update(callback, api, approve=False)
+
+
+# --- access, for testing and support only -------------------------------
+
+
+def _may_be_granted_access(telegram_id: int) -> bool:
+    """Whether this chat may get online through the bot.
+
+    Restricted because the bot cannot show ads: unrestricted, it would be
+    the free tier this service deliberately does not have. The admin chat
+    is always allowed so a new deployment can be tested before anything
+    else exists.
+    """
+    settings = get_settings()
+    allowed = {
+        chunk.strip()
+        for chunk in settings.telegram_allowed_chat_ids.split(",")
+        if chunk.strip()
+    }
+    if settings.telegram_admin_chat_id:
+        allowed.add(str(settings.telegram_admin_chat_id))
+    return str(telegram_id) in allowed
+
+
+@router.callback_query(F.data == keyboards.CB_ACCESS)
+async def on_access(callback: CallbackQuery, api: HeadApi) -> None:
+    if not _may_be_granted_access(callback.from_user.id):
+        await callback.answer()
+        await callback.message.answer(texts.USE_THE_APP, reply_markup=keyboards.main_menu())
+        return
+
+    user_id = await _user_id(api, callback.from_user.id)
+    try:
+        account = await api.grant_test_access(user_id)
+    except HeadApiError as exc:
+        logger.warning("test access grant failed for %s: %s", callback.from_user.id, exc)
+        await callback.message.answer(texts.GENERIC_ERROR, reply_markup=keyboards.main_menu())
+        return
+
+    await callback.answer()
+    await callback.message.answer(
+        texts.test_access_granted(account.access_seconds_remaining),
+        reply_markup=keyboards.main_menu(),
+    )

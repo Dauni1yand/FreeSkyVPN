@@ -37,7 +37,7 @@ class NoSniAvailableError(RuntimeError):
     """The sni_candidates pool is empty or fully disabled — an ops problem, not a user-facing one."""
 
 
-def pick_port(db: Session, node: Node, tier: Tier = Tier.free) -> int:
+def pick_port(db: Session, node: Node, tier: Tier = Tier.grace) -> int:
     """Choose a port for a new inbound on this node.
 
     Ports are recycled. A dead inbound is dropped from the node's config, so
@@ -154,7 +154,7 @@ def pick_sni(db: Session, node: Node, exclude: set[str] | None = None) -> SniCan
 def create_inbound(
     db: Session,
     node: Node,
-    tier: Tier = Tier.free,
+    tier: Tier = Tier.grace,
     transport: TransportSpec = DEFAULT_TRANSPORT,
     exclude_snis: set[str] | None = None,
 ) -> Inbound:

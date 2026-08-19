@@ -14,8 +14,10 @@ from datetime import datetime
 
 WELCOME = (
     "👋 <b>FreeSkyVPN</b>\n\n"
-    "Нажмите «Подключиться» — вы получите ссылку для вашего VPN-клиента.\n"
-    "Если соединение перестанет работать, нажмите «Не работает» и получите новую."
+    "Сервис бесплатный и живёт на рекламе: один ролик в приложении открывает "
+    "час доступа.\n\n"
+    "Здесь, в боте, рекламу показать нельзя — Telegram этого не умеет. "
+    "Бот остаётся для проверки и поддержки."
 )
 
 CONNECTING = "⏳ Подбираю сервер…"
@@ -30,11 +32,7 @@ REPORT_TOO_SOON = "⏱ Слишком часто. Попробуйте ещё р
 
 NO_ACTIVE_CONFIG = "У вас пока нет активной конфигурации — нажмите «Подключиться»."
 
-TRIAL_ALREADY_USED = "Пробный период уже был использован на этом аккаунте."
 
-PAYMENTS_DISABLED = (
-    "💳 Оплата пока не подключена. Пробный период и бесплатный доступ работают как обычно."
-)
 
 
 def config_message(vless_url: str) -> str:
@@ -70,37 +68,6 @@ def _format_date(iso: str | None) -> str:
         return datetime.fromisoformat(iso).strftime("%d.%m.%Y")
     except ValueError:
         return iso
-
-
-def subscription_status(active: bool, sub_type: str | None, expires_at: str | None) -> str:
-    if not active:
-        return (
-            "📋 <b>Ваш тариф: бесплатный</b>\n\n"
-            "Скорость ограничена. Оформите подписку — уберём ограничение и рекламу, "
-            "и дадим приоритет на серверах."
-        )
-
-    label = "пробный период" if sub_type == "trial" else "платная подписка"
-    return (
-        f"📋 <b>Ваш тариф: {label}</b>\n\n"
-        f"Действует до: <b>{_format_date(expires_at)}</b>\n\n"
-        "Максимальная скорость, без рекламы, приоритет на серверах."
-    )
-
-
-def trial_started(expires_at: str | None) -> str:
-    return (
-        "🎁 <b>Пробный период активирован</b>\n\n"
-        f"7 дней полного доступа до <b>{_format_date(expires_at)}</b>: "
-        "максимальная скорость, без рекламы."
-    )
-
-
-def payment_succeeded(expires_at: str | None) -> str:
-    return (
-        "🎉 <b>Оплата прошла</b>\n\n"
-        f"Подписка действует до <b>{_format_date(expires_at)}</b>. Спасибо!"
-    )
 
 
 def invoice_description(plan_name: str, duration_days: int) -> str:
@@ -192,3 +159,26 @@ LINK_OK = (
 
 def link_failed(reason: str) -> str:
     return f"❌ Не получилось: {reason}\n\nЗапросите новый код в приложении и пришлите его сюда."
+
+
+# --- access ---------------------------------------------------------------
+
+NEEDS_AN_AD = (
+    "🔒 <b>Час доступа закончился</b>\n\n"
+    "Откройте приложение и посмотрите один ролик — это откроет следующий час.\n\n"
+    "В боте ролик показать нельзя: у Telegram нет такой возможности."
+)
+
+USE_THE_APP = (
+    "Доступ выдаётся в приложении за просмотр рекламы — так оплачиваются "
+    "серверы.\n\nЭта кнопка работает только для тестовых аккаунтов."
+)
+
+
+def test_access_granted(seconds_remaining: int) -> str:
+    hours, minutes = divmod(max(seconds_remaining, 0) // 60, 60)
+    left = f"{hours} ч {minutes} мин" if hours else f"{minutes} мин"
+    return (
+        f"🔑 <b>Тестовый доступ выдан</b>\n\nОсталось: {left}.\n"
+        "Выдача без рекламы записывается в журнал."
+    )

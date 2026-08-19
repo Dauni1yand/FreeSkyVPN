@@ -99,7 +99,7 @@ def eligible_nodes(
 
         if tier is not None:
             ceiling = node.capacity
-            if tier == Tier.free:
+            if tier == Tier.grace:
                 ceiling = int(node.capacity * settings.free_admission_ratio)
             if node.load >= ceiling:
                 continue
@@ -113,9 +113,9 @@ def live_inbound(
 ) -> Inbound | None:
     """A usable inbound of this tier on this node.
 
-    Tier matters here rather than at the node: the node's `tc` classes key
+    Class matters here rather than at the node: the node's `tc` classes key
     their priority off the inbound's port, so putting a paying user on a
-    free-tier inbound would quietly cost them the priority they bought.
+    grace-class inbound would quietly cost them the priority they earned.
     """
     exclude_inbound_ids = exclude_inbound_ids or set()
     inbounds = db.scalars(
@@ -156,8 +156,8 @@ def assign_config(
         # remaining headroom is being held for paying users, which is what
         # "paid goes first under load" means at admission time.
         raise NoCapacityError(
-            f"no node is currently accepting {tier.value}-tier users"
-            + (" — free capacity is held back for paying users" if tier == Tier.free else "")
+            f"no node is currently accepting {tier.value}-class users"
+            + (" — headroom is held back for users on earned access" if tier == Tier.grace else "")
         )
 
     previous = active_assignment(db, user)
