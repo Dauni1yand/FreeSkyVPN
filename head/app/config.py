@@ -17,6 +17,17 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_admin_chat_id: str = ""
 
+    # Как выйти к api.telegram.org, когда напрямую нельзя.
+    #
+    # Telegram заблокирован в РФ, а голова стоит именно там — это не сбой,
+    # который пройдёт, а постоянное условие. Пусто значит «идти напрямую»:
+    # за пределами РФ так и надо, и навязывать всем прокси ради одной
+    # юрисдикции неправильно.
+    #
+    # Принимает socks5:// и http://. Проще всего — контейнер egress из
+    # docker-compose.yml, который выводит трафик через вашу же ноду.
+    telegram_proxy_url: str = ""
+
     # control-channel resilience thresholds (see app/node_manager/channel.py)
     node_channel_primary_timeout_s: float = 3.0
     node_channel_primary_fails_before_fallback: int = 3

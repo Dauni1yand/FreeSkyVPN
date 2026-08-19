@@ -12,6 +12,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from botapp.access_control import AdminOnlyMiddleware, allowed_chat_ids
@@ -25,6 +26,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 
+def _session(proxy_url: str) -> AiohttpSession:
+    """How the bot reaches Telegram.
+
+    Telegram is blocked in Russia and the bot runs on the same server as
+    the head, which is deliberately hosted there. Without a way out, long
+    polling fails on the first call and the bot never starts working —
+    with no error that points at the cause.
+
+    An empty setting means a direct connection, which is correct
+    everywhere the block does not apply; the proxy is opt-in rather than
+    imposed on every deployment.
+    """
+    if not proxy_url:
+        return AiohttpSession()
+    logger.info("reaching Telegram through %s", proxy_url)
+    return AiohttpSession(proxy=proxy_url)
+
+
 async def main() -> None:
     settings = get_settings()
     if not settings.telegram_bot_token:
@@ -35,6 +54,7 @@ async def main() -> None:
     bot = Bot(
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=_session(settings.telegram_proxy_url),
     )
     api = HeadApi()
 

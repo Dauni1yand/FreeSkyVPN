@@ -4,10 +4,18 @@ reachable, so it still works when every node's control channel is blocked
 at once.
 
 Telegram is the natural choice here rather than a dedicated status page or
-SMS gateway: this project already runs a bot (the MVP client itself), and
-Telegram's own infrastructure is broadly reachable even in environments
-that actively target VPN-adjacent traffic. Deliberately not used to carry
-configs or bulk data — just a heartbeat/alert line to a human.
+SMS gateway: this project already runs a bot, so the delivery path exists.
+Deliberately not used to carry configs or bulk data — just a heartbeat and
+alert line to a human.
+
+One caveat that used to be stated the other way round in this docstring:
+api.telegram.org is *not* reachable from Russia, which is where the head is
+meant to sit. So the alert goes through `telegram_proxy_url` when one is
+configured. That does put an alert about unreachable nodes on a path that
+may itself run through a node — see the compose file's `egress` service.
+Circular in the worst case, and worth knowing: an egress pointed at an
+independent server keeps the alerting honest, one pointed at your own fleet
+is convenient but goes quiet exactly when the whole fleet does.
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ def notify_admin(text: str) -> None:
 
     url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
     try:
-        httpx.post(url, json={"chat_id": settings.telegram_admin_chat_id, "text": text}, timeout=5.0)
+        with httpx.Client(proxy=settings.telegram_proxy_url or None, timeout=5.0) as client:
+            client.post(url, json={"chat_id": settings.telegram_admin_chat_id, "text": text})
     except httpx.HTTPError:
         logger.exception("Failed to deliver admin alert via Telegram")

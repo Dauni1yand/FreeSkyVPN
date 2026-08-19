@@ -37,6 +37,8 @@ services:
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-true}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+      # Telegram is blocked where this is meant to run; empty means direct.
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
       HEAD_CLIENT_CERT_PATH: /etc/freeskyvpn/head_client_cert.pem
       HEAD_CLIENT_KEY_PATH: /etc/freeskyvpn/head_client_key.pem
       NODE_CERT_CACHE_DIR: /var/lib/freeskyvpn/node_certs
@@ -62,12 +64,41 @@ services:
       - head
     environment:
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}"
+      # Without this the bot cannot reach Telegram from a Russian host and
+      # long polling fails on its first call. Empty means direct.
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
       HEAD_API_URL: http://head:8000
       HEAD_ADMIN_TOKEN: ${ADMIN_API_TOKEN}
       # The only chat allowed to approve an Xray update from Telegram.
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
       # Chats allowed online through the bot; it cannot show ads.
       TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
+
+  # The way out to Telegram, for a head sitting behind the block that makes
+  # one necessary. Off unless asked for: put COMPOSE_PROFILES=egress in .env
+  # (plus EGRESS_VLESS_URL and TELEGRAM_PROXY_URL=socks5://egress:1080) and
+  # an ordinary `docker compose up -d` brings it along.
+  #
+  # Reuses the head image rather than pulling another one — xray is already
+  # installed there for Reality key generation and the control-plane
+  # fallback tunnel, and this needs nothing else.
+  egress:
+    build:
+      context: .
+      dockerfile: head/Dockerfile
+    restart: always
+    profiles: ["egress"]
+    command: ["python", "/provisioning/egress.py"]
+    environment:
+      # Not `:?` — compose interpolates every service whether its profile is
+      # active or not, so a required variable here would stop the stack for
+      # everyone who never asked for this container. The script reports a
+      # missing value itself, where the person who enabled it will see it.
+      EGRESS_VLESS_URL: ${EGRESS_VLESS_URL:-}
+      EGRESS_SOCKS_PORT: ${EGRESS_SOCKS_PORT:-1080}
+    # No ports published on purpose. An open SOCKS proxy reachable from the
+    # internet is found by scanners within hours and becomes somebody
+    # else's relay; the compose network is all that needs to see it.
 
 volumes:
   pgdata:

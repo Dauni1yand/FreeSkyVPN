@@ -38,7 +38,13 @@ def _pump(src: socket.socket, dst: socket.socket) -> None:
                 pass
 
 
-def _handle(client: socket.socket, force_reply: int | None, upstream_port: int | None) -> None:
+def _handle(
+    client: socket.socket,
+    force_reply: int | None,
+    upstream_port: int | None,
+    upstream_host: str | None = None,
+    record: list | None = None,
+) -> None:
     try:
         version, nmethods = _recv_exact(client, 2)
         _recv_exact(client, nmethods)
@@ -54,13 +60,16 @@ def _handle(client: socket.socket, force_reply: int | None, upstream_port: int |
             client.sendall(b"\x05\x08\x00\x01" + b"\x00" * 6)
             return
         port = struct.unpack("!H", _recv_exact(client, 2))[0]
+        if record is not None:
+            record.append((host, port))
 
         if force_reply is not None:
             client.sendall(bytes([0x05, force_reply, 0x00, 0x01]) + b"\x00" * 6)
             return
 
         target_port = upstream_port if upstream_port is not None else port
-        upstream = socket.create_connection((host, target_port), timeout=5)
+        target_host = upstream_host if upstream_host is not None else host
+        upstream = socket.create_connection((target_host, target_port), timeout=5)
         client.sendall(b"\x05\x00\x00\x01" + b"\x00" * 6)
 
         threading.Thread(target=_pump, args=(client, upstream), daemon=True).start()
@@ -72,13 +81,29 @@ def _handle(client: socket.socket, force_reply: int | None, upstream_port: int |
 
 
 @contextmanager
-def socks5_server(force_reply: int | None = None, upstream_port: int | None = None):
+def socks5_server(
+    force_reply: int | None = None,
+    upstream_port: int | None = None,
+    upstream_host: str | None = None,
+    record: list | None = None,
+):
     """Yields the port of a running SOCKS5 proxy.
 
     `force_reply` makes every CONNECT fail with that reply code, for testing
-    the client's error handling. `upstream_port` redirects connections to a
-    fixed local port regardless of the requested one, so a probe aimed at
-    "some-domain:443" can be served by a test listener.
+    the client's error handling.
+
+    `upstream_port` redirects connections to a fixed port regardless of the
+    requested one, so a probe aimed at "some-domain:443" can be served by a
+    test listener. It leaves the *host* alone, which is enough when the
+    request names something that resolves locally.
+
+    `upstream_host` redirects that too. Needed when the client hardcodes a
+    real destination it cannot be talked out of — api.telegram.org, say —
+    and the test has no way to make that name resolve.
+
+    `record` collects every (host, port) the proxy was asked to reach. That
+    is what proves a client actually went through the proxy, without the
+    test having to satisfy whatever the client does next.
     """
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -94,7 +119,11 @@ def socks5_server(force_reply: int | None = None, upstream_port: int | None = No
                 conn, _ = listener.accept()
             except (TimeoutError, OSError):
                 continue
-            threading.Thread(target=_handle, args=(conn, force_reply, upstream_port), daemon=True).start()
+            threading.Thread(
+                target=_handle,
+                args=(conn, force_reply, upstream_port, upstream_host, record),
+                daemon=True,
+            ).start()
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()

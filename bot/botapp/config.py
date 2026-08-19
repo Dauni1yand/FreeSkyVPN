@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     # works, so an unset value costs a channel, not a capability.
     telegram_admin_chat_id: str = ""
 
+    # Как выйти к api.telegram.org, когда напрямую нельзя. Telegram
+    # заблокирован в РФ, а бот работает на том же сервере, что и голова.
+    # Пусто — идти напрямую. Принимает socks5:// и http://.
+    telegram_proxy_url: str = ""
+
     head_api_url: str = "http://localhost:8000"
     # Must match ADMIN_API_TOKEN on the head. The bot runs on our own server
     # and every call it makes acts on somebody else's behalf — granting
