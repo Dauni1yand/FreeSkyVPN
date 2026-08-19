@@ -208,3 +208,51 @@ def test_who_needs_disconnecting_is_answerable_on_its_own(db, node_pushes):
 
     _expire(db, user)
     assert [u.id for u, _a in enforcement.users_to_disconnect(db)] == [user.id]
+
+
+def _active(db) -> int:
+    return db.query(Assignment).filter(Assignment.released_at.is_(None)).count()
+
+
+def _run_tier_sweep(db) -> None:
+    from app.services.tiering import reconcile_placement, users_on_wrong_tier
+
+    for user in users_on_wrong_tier(db):
+        reconcile_placement(db, user)
+    db.flush()
+
+
+def test_the_tier_sweep_running_first_still_ends_offline(db, node_pushes):
+    """Regression, and the order the bug lived in.
+
+    The two sweeps are separate loops on separate timers, so both orders
+    happen. The tier sweep used to hand an expired user a *fresh* config — a
+    new inbound, a node restart, an outbox message saying their config had
+    changed — moments before the expiry sweep disconnected them anyway,
+    because `required_tier` answers `grace` for someone with no access at
+    all and that answer was acted on.
+    """
+    from app.db.models.outbox import ConfigPush
+
+    user = _connected_user(db)
+    _expire(db, user)
+
+    _run_tier_sweep(db)
+
+    assert _active(db) == 1, "still connected until the expiry sweep runs"
+    assert db.query(ConfigPush).count() == 0, "and not told their config changed"
+
+    enforcement.sweep_expired(db)
+    assert _active(db) == 0
+
+
+def test_the_expiry_sweep_running_first_stays_offline(db, node_pushes):
+    """The other order: the tier sweep must not put them back."""
+    user = _connected_user(db)
+    _expire(db, user)
+
+    enforcement.sweep_expired(db)
+    assert _active(db) == 0
+
+    _run_tier_sweep(db)
+    assert _active(db) == 0, "the tier sweep must not reconnect them"

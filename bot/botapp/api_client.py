@@ -93,7 +93,7 @@ class HeadApi:
         settings = get_settings()
         self._client = client or httpx.AsyncClient(
             base_url=settings.head_api_url,
-            headers={"X-Service-Token": settings.head_service_token},
+            headers={"X-Admin-Token": settings.head_admin_token},
             timeout=20.0,
         )
 

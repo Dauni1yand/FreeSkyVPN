@@ -19,25 +19,35 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.api.auth import ServiceAuth
+from app.api.auth import AdminAuth, ServiceAuth
+from app.api.config_ops import (
+    ConfigResponse,
+    FailureResponse,
+    connect_user,
+    report_user_failure,
+)
 from app.api.deps import DbSession
 from app.api.user_auth_dep import CurrentUser
 from app.config import get_settings
 from app.db.models.user import AuthIdentity, AuthProvider, User
 from app.services import access, routing_policy, user_auth
-from app.services.config_selector import NoCapacityError, assign_config
-from app.services.fail_handler import (
-    NoActiveConfigError,
-    ReportTooSoonError,
-    report_failure,
-)
+from app.services.config_selector import NoCapacityError
 from app.services.tiering import reconcile_placement
 
 # The service token still guards the whole router: it says "this is our app
 # talking", while the bearer token says "and this is who it is talking for".
 # Dropping the first would leave the registration endpoint open to anyone on
 # the internet to spin up accounts.
+# The app's own surface: registering a device, the /me/* endpoints scoped by
+# its bearer token, and the routing policy. Nothing here acts on anyone
+# else's behalf, which is why the APK's service token is enough.
 router = APIRouter(prefix="/api/v1", tags=["client"], dependencies=[ServiceAuth])
+
+# Called by the bot, the provisioning scripts and the ad network's servers —
+# never by the app. Behind the admin token, because with the APK's token
+# alone these three grant unlimited access, vouch for a Telegram identity,
+# and redeem an ad nobody watched.
+admin_router = APIRouter(prefix="/api/v1", tags=["client-admin"], dependencies=[AdminAuth])
 
 
 # --- registration --------------------------------------------------------
@@ -72,72 +82,14 @@ def register_device(payload: RegisterRequest, db: DbSession) -> RegisterResponse
 # --- the connect button --------------------------------------------------
 
 
-class ConfigResponse(BaseModel):
-    vless_url: str
-    node_country: str
-    inbound_id: str
-
-
-class FailureResponse(ConfigResponse):
-    inbound_declared_dead: bool
-    node_declared_burned: bool
-    users_migrated: int
-
-
 @router.post("/me/connect", response_model=ConfigResponse)
 def connect(db: DbSession, user: CurrentUser) -> ConfigResponse:
-    # The whole business model in one guard: the service is funded by
-    # advertising, so an hour has to be bought before it can be used.
-    # 402 rather than 403 — the client's move is to show an ad, not to
-    # re-authenticate, and the two must not look alike to it.
-    try:
-        access.require_access(user)
-    except access.NoAccessError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
-        ) from exc
-
-    try:
-        config = assign_config(db, user)
-    except NoCapacityError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-
-    db.commit()
-    return ConfigResponse(
-        vless_url=config.vless_url,
-        node_country=config.node_country,
-        inbound_id=config.inbound_id,
-    )
+    return connect_user(db, user)
 
 
 @router.post("/me/report-failure", response_model=FailureResponse)
 def report_not_working(db: DbSession, user: CurrentUser) -> FailureResponse:
-    try:
-        outcome = report_failure(db, user)
-    except ReportTooSoonError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
-            headers={"Retry-After": str(exc.retry_after_seconds)},
-        ) from exc
-    except NoActiveConfigError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except NoCapacityError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-
-    db.commit()
-    return FailureResponse(
-        vless_url=outcome.config.vless_url,
-        node_country=outcome.config.node_country,
-        inbound_id=outcome.config.inbound_id,
-        inbound_declared_dead=outcome.inbound_declared_dead,
-        node_declared_burned=outcome.node_declared_burned,
-        users_migrated=outcome.users_migrated,
-    )
+    return report_user_failure(db, user)
 
 
 # --- account and access -------------------------------------------------
@@ -349,7 +301,7 @@ class RedeemResponse(BaseModel):
     user_id: uuid.UUID
 
 
-@router.post("/auth/link/redeem", response_model=RedeemResponse)
+@admin_router.post("/auth/link/redeem", response_model=RedeemResponse)
 def link_redeem(payload: RedeemRequest, db: DbSession) -> RedeemResponse:
     """Called by the bot, never by the app.
 
@@ -404,7 +356,7 @@ class AdVerifyRequest(BaseModel):
     nonce: str
 
 
-@router.post("/ad/verify")
+@admin_router.post("/ad/verify")
 def ad_verify(payload: AdVerifyRequest, db: DbSession) -> dict:
     """Grant against the ad network's server-to-server callback.
 
@@ -439,7 +391,7 @@ class GrantAccessRequest(BaseModel):
     minutes: int | None = None
 
 
-@router.post("/admin/grant-access", response_model=AccountResponse)
+@admin_router.post("/admin/grant-access", response_model=AccountResponse)
 def grant_access(payload: GrantAccessRequest, db: DbSession) -> AccountResponse:
     """Put an account online without an ad. Service-token only.
 

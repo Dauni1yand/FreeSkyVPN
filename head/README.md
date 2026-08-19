@@ -29,11 +29,20 @@ Postgres:
 ## Структура
 
 - `app/db/models` — схема (пользователи/идентификация, тарифы, ноды/инбаунды, SNI-пул, логи, outbox)
-- `app/api/routers` — `/health` (открыт), остальное под сервисным токеном:
-  `/auth/telegram`, `/nodes`, `/connect`, `/report-failure`, `/plans`,
-  `/me/*` (подключение, реклама, привязка), `/pushes/*`,
-  `/xray-updates/*`
-- `app/api/auth.py` — сервисный токен между головой и её клиентами (бот, провижининг)
+- `app/api/routers` — `/health` открыт, остальное делится по двум токенам:
+  - **токен приложения** (`X-Service-Token`, он же `HEAD_SECRET_KEY`) —
+    `/auth/device`, `/me`, `/me/connect`, `/me/report-failure`,
+    `/me/ad/{prepare,complete,unavailable}`, `/me/link/start`,
+    `/routing-policy`. Он вкомпилирован в APK, то есть публичен; открывает
+    ровно то, что и так делает приложение.
+  - **служебный токен** (`X-Admin-Token`, он же `ADMIN_API_TOKEN`) — все
+    остальные 19: `/nodes/*`, `/pushes/*`, `/xray-updates/*`, `/sni/*`,
+    `/connect`, `/report-failure`, `/auth/telegram`, `/auth/link/redeem`,
+    `/ad/verify`, `/admin/grant-access`. Знают только голова, бот и ноды.
+- `app/api/auth.py` — оба токена и почему их два
+- `app/api/config_ops.py` — общее тело `/connect` и `/me/connect`. Раньше эти
+  два пути были написаны по отдельности, и один из них разошёлся с другим:
+  проверки оплаченного времени в нём не было вовсе.
 - `app/node_manager` — транспорт до ноды:
   - `rest_client.py` — клиент REST-контракта marzban-node (connect/start/restart/stop)
   - `config_render.py` — сборка полного Xray-конфига ноды из её inbounds

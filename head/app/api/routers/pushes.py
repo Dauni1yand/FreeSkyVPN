@@ -20,14 +20,14 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.api.auth import ServiceAuth
+from app.api.auth import AdminAuth
 from app.api.deps import DbSession
 from app.db.models.node import Assignment, Inbound, Node
 from app.db.models.outbox import ConfigPush
 from app.db.models.user import AuthIdentity, AuthProvider
 from app.services.vless_link import build_vless_link
 
-router = APIRouter(prefix="/api/v1/pushes", tags=["pushes"], dependencies=[ServiceAuth])
+router = APIRouter(prefix="/api/v1/pushes", tags=["pushes"], dependencies=[AdminAuth])
 
 
 class PendingPush(BaseModel):

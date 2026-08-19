@@ -14,8 +14,12 @@ class Settings(BaseSettings):
     telegram_admin_chat_id: str = ""
 
     head_api_url: str = "http://localhost:8000"
-    # must match HEAD_SECRET_KEY on the head (see head/app/api/auth.py)
-    head_service_token: str = ""
+    # Must match ADMIN_API_TOKEN on the head. The bot runs on our own server
+    # and every call it makes acts on somebody else's behalf — granting
+    # access, approving a fleet restart, vouching for a Telegram id — so it
+    # carries the secret that never ships to a device, not the one compiled
+    # into the APK. See head/app/api/auth.py.
+    head_admin_token: str = ""
 
     # Chats allowed to get online through the bot, comma separated.
     #

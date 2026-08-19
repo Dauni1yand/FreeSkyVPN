@@ -23,11 +23,13 @@ from app.main import app
 from tests.factories import make_inbound, make_node
 
 TOKEN = "test-service-token"
+ADMIN = "test-admin-token"
 
 
 @pytest.fixture
 def session_factory(monkeypatch):
     monkeypatch.setenv("HEAD_SECRET_KEY", TOKEN)
+    monkeypatch.setenv("ADMIN_API_TOKEN", ADMIN)
     monkeypatch.setenv("BACKGROUND_JOBS_ENABLED", "false")
     get_settings.cache_clear()
 
@@ -361,10 +363,13 @@ def test_the_app_shows_a_code_and_the_bot_redeems_it(client):
     token, user_id = _register(client)
 
     code = client.post("/api/v1/me/link/start", headers=_authed(client, token)).json()["code"]
-    # The bot calls this with only the service token — it is vouching for a
-    # Telegram id it saw a message arrive from.
+    # The bot redeems it, holding the admin token: it is vouching for a
+    # Telegram id it saw a message arrive from, which is a claim only
+    # something running on our own server can make.
     redeemed = client.post(
-        "/api/v1/auth/link/redeem", json={"code": code, "telegram_id": "555"}
+        "/api/v1/auth/link/redeem",
+        json={"code": code, "telegram_id": "555"},
+        headers={"X-Admin-Token": ADMIN},
     )
 
     assert redeemed.status_code == 200
@@ -374,23 +379,31 @@ def test_the_app_shows_a_code_and_the_bot_redeems_it(client):
 
 def test_a_wrong_code_is_a_400_not_a_500(client):
     response = client.post(
-        "/api/v1/auth/link/redeem", json={"code": "000000", "telegram_id": "555"}
+        "/api/v1/auth/link/redeem",
+        json={"code": "000000", "telegram_id": "555"},
+        headers={"X-Admin-Token": ADMIN},
     )
     assert response.status_code == 400
 
 
 def test_the_app_cannot_claim_a_telegram_identity_by_itself(client):
-    """Redemption is bot-only. If the app could call it with a chosen
-    telegram_id, it could attach itself to somebody else's account."""
+    """Redemption is bot-only, and now actually is.
+
+    The app holds a code — its own — and could previously call this route,
+    because it carried the same token the bot did. Naming any telegram_id it
+    liked would have attached it to that person's account. It is behind the
+    admin token now, which the app never receives.
+    """
     token, _ = _register(client)
     code = client.post("/api/v1/me/link/start", headers=_authed(client, token)).json()["code"]
 
-    # It is still reachable — but only because the app holds the service
-    # token too. What it cannot do is prove the Telegram id, which is why
-    # the bot is the only caller that legitimately has one.
-    assert client.post(
-        "/api/v1/auth/link/redeem", json={"code": code, "telegram_id": "555"}
-    ).status_code == 200
+    refused = client.post(
+        "/api/v1/auth/link/redeem",
+        json={"code": code, "telegram_id": "555"},
+        headers=_authed(client, token),
+    )
+
+    assert refused.status_code == 401
 
 
 # --- routing policy ------------------------------------------------------

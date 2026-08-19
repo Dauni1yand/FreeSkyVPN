@@ -209,10 +209,11 @@ POSTGRES_DB=freeskyvpn
 
 HEAD_SECRET_KEY=$(genkey)
 SECRETS_KEY=$(genkey)
+ADMIN_API_TOKEN=$(genkey)
 
 TELEGRAM_BOT_TOKEN=$BOT_TOKEN
 TELEGRAM_ADMIN_CHAT_ID=$ADMIN_CHAT_ID
-PAYMENT_PROVIDER_TOKEN=
+TELEGRAM_ALLOWED_CHAT_IDS=$ADMIN_CHAT_ID
 
 ADMIN_COOKIE_SECURE=$([[ -n $DOMAIN ]] && echo true || echo false)
 ADMIN_DOMAIN=$DOMAIN
@@ -228,6 +229,36 @@ EOF
 fi
 
 set -a; . "$ENV_FILE"; set +a
+
+# An .env written by an older release is missing whatever keys a newer one
+# added. Re-running this script is how people upgrade, and the branch above
+# deliberately leaves an existing .env untouched — so fill the gaps here.
+# Without this the head starts with an empty secret and refuses every request
+# that needs it, which surfaces as a bot that stopped working rather than as
+# anything pointing back at the upgrade.
+ensure_key() {  # ensure_key <ИМЯ> <значение>; 0 — уже было, 1 — создан
+    local key=$1 value=$2
+    [[ -n ${!key:-} ]] && return 0
+    if grep -q "^${key}=" "$ENV_FILE"; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+    export "$key=$value"
+    return 1
+}
+
+ensure_key HEAD_SECRET_KEY "$(genkey)" || info "в .env добавлен HEAD_SECRET_KEY"
+ensure_key ADMIN_API_TOKEN "$(genkey)" || info "в .env добавлен ADMIN_API_TOKEN"
+
+# A regenerated SECRETS_KEY is not a neutral fix: node SSH passwords in the
+# database were encrypted with the old one and become unreadable. Said out
+# loud, because the alternative is discovering it at the next node push.
+if ! ensure_key SECRETS_KEY "$(genkey)"; then
+    warn "в .env не было SECRETS_KEY — создан новый"
+    info "Если ноды уже добавлены, их SSH-пароли прежним ключом не расшифровать —"
+    info "введите их заново в админке."
+fi
 
 # ------------------------------------------------------- 4. сертификаты ---
 
@@ -322,6 +353,7 @@ fi
 step "Проверка"
 docker compose exec -T head python smoke_test.py \
     --token "$HEAD_SECRET_KEY" \
+    --admin-token "$ADMIN_API_TOKEN" \
     ${ADMIN_PASS:+--admin-user admin --admin-password "$ADMIN_PASS"} 2>&1 | sed 's/^/  /'
 
 cat <<SUMMARY

@@ -29,8 +29,8 @@ async def main() -> None:
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
-    if not settings.head_service_token:
-        raise SystemExit("HEAD_SERVICE_TOKEN is not set (must match HEAD_SECRET_KEY on the head)")
+    if not settings.head_admin_token:
+        raise SystemExit("HEAD_ADMIN_TOKEN is not set (must match ADMIN_API_TOKEN on the head)")
 
     bot = Bot(
         token=settings.telegram_bot_token,

@@ -243,9 +243,36 @@ def test_moving_class_queues_a_push_so_the_user_is_told(db, pushes):
     assert push.reason == PushReason.tier_changed
 
 
-def test_expiry_sweep_finds_lapsed_users(db, pushes):
-    """Nothing delivers an expiry event — an hour simply stops being current
-    at a timestamp — so it has to be swept for."""
+def test_a_lapsed_user_is_not_this_sweep_s_business(db, pushes):
+    """They belong offline, not in a slower class.
+
+    Regression: `required_tier` answers `grace` for someone with no access,
+    because every user has to map to some class. Acting on that answer meant
+    this sweep handed an expired user a *fresh* config — a new inbound, a
+    node restart, and an outbox message telling them their config had
+    changed — moments before `enforcement.sweep_expired` disconnected them
+    anyway. Removing them is that sweep's job, not this one's.
+    """
+    seed_snis(db)
+    make_node(db)
+    user = make_user(db)
+    _watch_ad(db, user)
+    assign_config(db, user)
+    assert current_tier(db, user) == Tier.full
+    before = db.query(Assignment).filter(Assignment.released_at.is_(None)).one().id
+
+    _expire(db, user)
+
+    assert users_on_wrong_tier(db) == []
+    assert reconcile_placement(db, user) is False
+    after = db.query(Assignment).filter(Assignment.released_at.is_(None)).one().id
+    assert before == after, "an expired user must not be handed a new config"
+    assert db.query(ConfigPush).count() == 0, "nor told that it changed"
+
+
+def test_the_fallback_moves_a_user_down_a_class(db, pushes):
+    """The sweep's actual job: someone who still has access but whose class
+    changed — earned time ran out, the fallback took over."""
     seed_snis(db)
     make_node(db)
     user = make_user(db)
@@ -253,10 +280,13 @@ def test_expiry_sweep_finds_lapsed_users(db, pushes):
     assign_config(db, user)
     assert current_tier(db, user) == Tier.full
 
+    # Earned time gone, on the fallback instead.
     _expire(db, user)
+    access.grant_grace(db, user)
+    db.flush()
 
     assert [u.id for u in users_on_wrong_tier(db)] == [user.id]
-    reconcile_placement(db, user)
+    assert reconcile_placement(db, user) is True
     assert current_tier(db, user) == Tier.grace
 
 

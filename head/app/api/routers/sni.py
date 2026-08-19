@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from app.api.auth import ServiceAuth
+from app.api.auth import AdminAuth
 from app.api.deps import DbSession
 from app.db.models.node import Node, SniCandidate, SniProbe
 from app.services.sni_discovery import (
@@ -17,7 +17,7 @@ from app.services.sni_discovery import (
     refresh_candidates,
 )
 
-router = APIRouter(prefix="/api/v1/sni", tags=["sni"], dependencies=[ServiceAuth])
+router = APIRouter(prefix="/api/v1/sni", tags=["sni"], dependencies=[AdminAuth])
 
 
 class RefreshResponse(BaseModel):

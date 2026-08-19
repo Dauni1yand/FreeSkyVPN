@@ -25,13 +25,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.api.auth import ServiceAuth
+from app.api.auth import AdminAuth
 from app.api.deps import DbSession
 from app.db.models.node import Node
 from app.db.models.update import NodeUpdate, NodeUpdateStatus
 from app.services import xray_updates
 
-router = APIRouter(prefix="/api/v1/xray-updates", tags=["xray-updates"], dependencies=[ServiceAuth])
+router = APIRouter(prefix="/api/v1/xray-updates", tags=["xray-updates"], dependencies=[AdminAuth])
 
 
 class UpdateNodeInfo(BaseModel):

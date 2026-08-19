@@ -1,13 +1,29 @@
-"""Service-to-service authentication for the head API.
+"""Two secrets, because they protect two different things.
 
-Every endpoint here is currently called by trusted server-side clients (the
-Telegram bot, provisioning scripts) rather than by end users, so a single
-shared secret is the right weight of mechanism. Without it `/connect` would
-hand out a working config for any `user_id` a caller cared to name, and
-`/admin/grant-access` would let anyone put themselves online for free.
+**The service token** (`X-Service-Token`, `HEAD_SECRET_KEY`) ships inside
+the Android APK. Anyone who unzips one has it. That is not a flaw to fix —
+there is no way to put a secret in an installable file and keep it — it is a
+fact to design around. So it is treated as what it actually is: a weak
+signal that a request came from our client rather than from a scanner
+sweeping the internet. It guards nothing on its own.
 
-The Android phase adds per-user tokens on top; those authenticate the
-*user*, while this keeps authenticating the *caller*.
+**The admin token** (`X-Admin-Token`, `ADMIN_API_TOKEN`) never leaves the
+server. The bot and the provisioning scripts run there and can hold a real
+secret; the app cannot. Everything that is not the app's own surface sits
+behind it.
+
+The distinction was not there at first, and the consequence was a cluster of
+holes that all had the same shape. With the APK's token alone one could:
+grant oneself unlimited access through `/admin/grant-access`; redeem an ad
+token through `/ad/verify` without watching anything; register a rogue node
+into the pool and be handed every user's traffic; read `/pushes/pending` and
+collect Telegram ids alongside working `vless://` links; and restart the
+whole fleet through `/xray-updates/decide`.
+
+What the app is allowed to reach with the service token alone is therefore
+deliberately small: register a device, the `/me/*` endpoints scoped by its
+own bearer token, and the routing policy. Nothing there acts on anyone
+else's behalf.
 """
 
 from __future__ import annotations
@@ -20,16 +36,31 @@ from fastapi import Depends, Header, HTTPException, status
 from app.config import get_settings
 
 
-def require_service_token(x_service_token: Annotated[str | None, Header()] = None) -> None:
-    expected = get_settings().head_secret_key
+def _compare(supplied: str | None, expected: str, *, what: str) -> None:
     if not expected or expected == "change-me":
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="HEAD_SECRET_KEY is unset or left at its default; refusing to serve",
+            detail=f"{what} is unset or left at its default; refusing to serve",
         )
-    # constant-time compare so the token cannot be recovered by timing
-    if x_service_token is None or not secrets.compare_digest(x_service_token, expected):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid service token")
+    # Constant time, so the value cannot be recovered by measuring replies.
+    if supplied is None or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"invalid {what}")
+
+
+def require_service_token(x_service_token: Annotated[str | None, Header()] = None) -> None:
+    """Says "this is our client build". Guards the app's own surface only."""
+    _compare(x_service_token, get_settings().head_secret_key, what="service token")
+
+
+def require_admin_token(x_admin_token: Annotated[str | None, Header()] = None) -> None:
+    """Says "this call came from our own server".
+
+    Required by everything that acts on another user's behalf, changes the
+    fleet, or reads across accounts. The app never sends it and must never
+    be given it — a secret compiled into a downloadable file is public.
+    """
+    _compare(x_admin_token, get_settings().admin_api_token, what="admin token")
 
 
 ServiceAuth = Depends(require_service_token)
+AdminAuth = Depends(require_admin_token)

@@ -3,10 +3,12 @@
 
 The unit tests prove the logic; this proves the *deployment* — that the
 containers are up, migrations ran, the admin panel answers, the service
-token matches between head and bot, and a real user flow works end to end.
+both tokens are accepted where they should be, and a real user flow works
+end to end.
 Those are exactly the things that pass in CI and still break on a server.
 
-    python3 smoke_test.py --url http://127.0.0.1:8000 --token "$HEAD_SECRET_KEY"
+    python3 smoke_test.py --url http://127.0.0.1:8000 \
+        --token "$HEAD_SECRET_KEY" --admin-token "$ADMIN_API_TOKEN"
 
 Add --admin-user/--admin-password to check the panel too. Nothing here
 writes to a node; the connect check is skipped when no node is registered
@@ -47,13 +49,20 @@ def check(name: str, fn) -> object:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8000")
-    parser.add_argument("--token", required=True, help="HEAD_SECRET_KEY")
+    parser.add_argument("--token", required=True, help="HEAD_SECRET_KEY (ships in the APK)")
+    parser.add_argument(
+        "--admin-token",
+        required=True,
+        help="ADMIN_API_TOKEN (server-side only; the bot and provisioning use it)",
+    )
     parser.add_argument("--admin-user")
     parser.add_argument("--admin-password")
     args = parser.parse_args()
 
     api = httpx.Client(
-        base_url=args.url.rstrip("/"), headers={"X-Service-Token": args.token}, timeout=30.0
+        base_url=args.url.rstrip("/"),
+        headers={"X-Service-Token": args.token, "X-Admin-Token": args.admin_token},
+        timeout=30.0,
     )
     anon = httpx.Client(base_url=args.url.rstrip("/"), timeout=30.0, follow_redirects=False)
 
@@ -77,24 +86,70 @@ def main() -> int:
         assert response.status_code == 401, f"expected 401 without a token, got {response.status_code}"
         return "unauthenticated calls are rejected"
 
-    check("API requires the service token", auth_enforced)
+    check("API requires a token", auth_enforced)
 
-    def token_matches():
-        response = api.get("/api/v1/plans")
+    def apk_token_opens_nothing_privileged():
+        # The service token ships inside the APK, so anything it reaches is
+        # reachable by anyone. This is the boundary that keeps that from
+        # mattering — see head/app/api/auth.py.
+        import httpx as _httpx
+
+        with _httpx.Client(
+            base_url=args.url.rstrip("/"),
+            headers={"X-Service-Token": args.token},
+            timeout=15.0,
+        ) as apk:
+            response = apk.get("/api/v1/pushes/pending")
+        assert response.status_code == 401, (
+            f"the APK's token reached an admin endpoint ({response.status_code}) — "
+            "check ADMIN_API_TOKEN is set and differs from HEAD_SECRET_KEY"
+        )
+        return "admin endpoints refuse it"
+
+    check("APK token opens nothing privileged", apk_token_opens_nothing_privileged)
+
+    # Registering a device is the app's first call and the only one it can
+    # make without a bearer token, so it doubles as the check that the
+    # service token is right. The token it returns is what the rest of the
+    # app surface needs.
+    device_token = None
+
+    def service_token_matches():
+        nonlocal device_token
+        response = api.post(
+            "/api/v1/auth/device", json={"device_label": "smoke-test"}
+        )
+        assert response.status_code == 201, f"{response.status_code}: {response.text[:160]}"
+        device_token = response.json()["token"]
+        return "device registered"
+
+    check("app token accepted", service_token_matches)
+
+    def routing_policy_served():
+        if not device_token:
+            return (SKIP, "no device token to ask with")
+        response = api.get(
+            "/api/v1/routing-policy", headers={"Authorization": f"Bearer {device_token}"}
+        )
+        assert response.status_code == 200, f"{response.status_code}: {response.text[:120]}"
+        policy = response.json()
+        direct = len(policy["direct_tlds"]) + len(policy["direct_domains"])
+        assert direct, "an empty policy sends Russian traffic through the tunnel"
+        return f"{direct} direct rules, version {policy['version']}"
+
+    check("split tunnel policy served", routing_policy_served)
+
+    def admin_token_matches():
+        # The bot's surface. A mismatch here is the usual reason a freshly
+        # upgraded bot answers every button with an error.
+        response = api.get("/api/v1/nodes")
+        assert response.status_code != 401, "ADMIN_API_TOKEN does not match the head's"
         assert response.status_code == 200, f"status {response.status_code}: {response.text[:120]}"
-        return f"{len(response.json())} plan(s) configured"
+        return "server-side token matches"
 
-    check("service token accepted", token_matches)
+    check("admin token accepted", admin_token_matches)
 
     print("\ndata")
-
-    plans = api.get("/api/v1/plans").json() if api.get("/api/v1/plans").is_success else None
-    if plans is None:
-        record(FAIL, "plans readable", "the endpoint did not answer")
-    elif not plans:
-        record(FAIL, "at least one plan exists", "the bot will have nothing to sell")
-    else:
-        record(PASS, "at least one plan exists", ", ".join(p["code"] for p in plans))
 
     nodes_response = api.get("/api/v1/nodes")
     nodes = nodes_response.json() if nodes_response.is_success else None

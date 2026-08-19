@@ -24,12 +24,13 @@ from app.db.models.update import NodeUpdate, NodeUpdateStatus
 from app.main import app
 from tests.factories import make_node
 
-TOKEN = "test-service-token"
+ADMIN = "test-admin-token"
 
 
 @pytest.fixture
 def session_factory(monkeypatch):
-    monkeypatch.setenv("HEAD_SECRET_KEY", TOKEN)
+    monkeypatch.setenv("HEAD_SECRET_KEY", "irrelevant-here")
+    monkeypatch.setenv("ADMIN_API_TOKEN", ADMIN)
     monkeypatch.setenv("BACKGROUND_JOBS_ENABLED", "false")
     get_settings.cache_clear()
 
@@ -52,7 +53,7 @@ def db(session_factory) -> Session:
 @pytest.fixture
 def client(db):
     app.dependency_overrides[get_db] = lambda: db
-    with TestClient(app, headers={"X-Service-Token": TOKEN}) as test_client:
+    with TestClient(app, headers={"X-Admin-Token": ADMIN}) as test_client:
         yield test_client
     app.dependency_overrides.clear()
 
@@ -237,9 +238,9 @@ def test_the_two_delivery_stamps_are_independent(client, db):
 # --- auth ----------------------------------------------------------------
 
 
-def test_the_endpoints_require_the_service_token(db):
-    """Without this, anyone who can reach the head could authorise a restart
-    of every node in the fleet."""
+def test_the_endpoints_require_the_admin_token(db):
+    """Not the service token: that one ships in the APK, so guarding a
+    fleet-wide restart with it would guard nothing."""
     app.dependency_overrides[get_db] = lambda: db
     with TestClient(app) as anon:
         assert anon.get("/api/v1/xray-updates/notifications").status_code == 401

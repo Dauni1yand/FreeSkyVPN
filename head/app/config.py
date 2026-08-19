@@ -7,7 +7,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = "postgresql+psycopg://freeskyvpn:freeskyvpn@localhost:5432/freeskyvpn"
+    # Ships inside the APK, so it is public by construction. Guards only the
+    # app's own surface — see app/api/auth.py.
     head_secret_key: str = "change-me"
+    # Never leaves the server. Guards everything that acts on another user's
+    # behalf, changes the fleet, or reads across accounts.
+    admin_api_token: str = "change-me"
 
     telegram_bot_token: str = ""
     telegram_admin_chat_id: str = ""

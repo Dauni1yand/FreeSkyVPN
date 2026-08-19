@@ -31,6 +31,9 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-freeskyvpn}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-freeskyvpn}
       HEAD_SECRET_KEY: "${HEAD_SECRET_KEY:?generate one on the host, see DEPLOY.md step 1}"
       SECRETS_KEY: "${SECRETS_KEY:?generate one on the host, see DEPLOY.md step 1}"
+      # Guards everything that acts on another user's behalf. Never given to
+      # the app — a secret compiled into a downloadable file is public.
+      ADMIN_API_TOKEN: "${ADMIN_API_TOKEN:?generate one on the host, see DEPLOY.md step 1}"
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-true}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
@@ -60,7 +63,7 @@ services:
     environment:
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}"
       HEAD_API_URL: http://head:8000
-      HEAD_SERVICE_TOKEN: ${HEAD_SECRET_KEY}
+      HEAD_ADMIN_TOKEN: ${ADMIN_API_TOKEN}
       # The only chat allowed to approve an Xray update from Telegram.
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
       # Chats allowed online through the bot; it cannot show ads.
