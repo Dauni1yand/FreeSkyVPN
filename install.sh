@@ -141,6 +141,15 @@ docker compose version >/dev/null 2>&1 || die "нет 'docker compose'" \
 step "3/8  Настройки"
 
 KEEP_ENV=false
+# Доступ к базе переносится из прежнего .env, а не генерируется заново.
+#
+# Postgres применяет POSTGRES_PASSWORD только когда инициализирует пустой
+# каталог данных. Если том с базой уже создан прошлым запуском, новый
+# пароль в .env просто разойдётся с тем, что лежит в базе, и голова упрётся
+# в «password authentication failed for user "freeskyvpn"» — на шаге, где
+# про .env уже никто не думает. Перезаполнение .env не может сменить пароль
+# базы, поэтому оно и не делает вид, что может.
+OLD_PG_USER=""; OLD_PG_PASS=""; OLD_PG_DB=""
 if [[ -f $ENV_FILE ]]; then
     warn ".env уже существует"
     if confirm "Оставить как есть? (нет — заполним заново)"; then
@@ -149,6 +158,10 @@ if [[ -f $ENV_FILE ]]; then
     else
         cp "$ENV_FILE" "$ENV_FILE.backup.$(date +%s)"
         info "прежний сохранён рядом с расширением .backup"
+        OLD_PG_USER=$(sed -n 's/^POSTGRES_USER=//p' "$ENV_FILE" | head -1)
+        OLD_PG_PASS=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$ENV_FILE" | head -1)
+        OLD_PG_DB=$(sed -n 's/^POSTGRES_DB=//p' "$ENV_FILE" | head -1)
+        [[ -n $OLD_PG_PASS ]] && info "доступ к базе сохранён прежним — иначе он разойдётся с самой базой"
     fi
 fi
 
@@ -235,9 +248,9 @@ if [[ $KEEP_ENV == false ]]; then
     cat > "$ENV_FILE" <<EOF
 # Сгенерировано install.sh $(date -Iseconds)
 
-POSTGRES_USER=freeskyvpn
-POSTGRES_PASSWORD=$(genkey)
-POSTGRES_DB=freeskyvpn
+POSTGRES_USER=${OLD_PG_USER:-freeskyvpn}
+POSTGRES_PASSWORD=${OLD_PG_PASS:-$(genkey)}
+POSTGRES_DB=${OLD_PG_DB:-freeskyvpn}
 
 HEAD_SECRET_KEY=$(genkey)
 SECRETS_KEY=$(genkey)
@@ -324,6 +337,12 @@ ok "контейнеры запущены"
 
 step "6/8  Жду готовности"
 
+# Имя тома compose складывает из имени проекта; спрашиваем у него самого,
+# чтобы подсказка ниже называла существующий том, а не угаданный.
+COMPOSE_PROJECT=$(docker compose config --format json 2>/dev/null \
+                  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))' 2>/dev/null)
+COMPOSE_PROJECT=${COMPOSE_PROJECT:-freeskyvpn}
+
 READY=false
 for _ in $(seq 1 60); do
     if curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null 2>&1; then
@@ -334,8 +353,32 @@ done
 
 if [[ $READY == false ]]; then
     fail "голова не поднялась за две минуты"
+    HEAD_LOG=$(docker compose logs --tail 25 head 2>&1)
+
+    # Названо отдельно, потому что трассировка SQLAlchemy на двадцать строк
+    # заканчивается фразой про пароль, а причина не в .env: пароль там
+    # верный, это база осталась со старым. Без подсказки человек идёт
+    # перегенерировать .env — то есть ровно туда, откуда пришёл.
+    if grep -q "password authentication failed" <<<"$HEAD_LOG"; then
+        fail "база не принимает пароль из .env"
+        info "Так бывает, когда том с базой остался от прошлой установки:"
+        info "Postgres задаёт пароль только при первой инициализации, и том"
+        info "с тех пор помнит прежний. Перезаполнение .env это не чинит."
+        echo
+        info "Если данными можно пожертвовать (первая установка — можно):"
+        info "    docker compose down"
+        info "    docker volume rm ${COMPOSE_PROJECT}_pgdata"
+        info "    sudo ./install.sh"
+        echo
+        info "Если в базе уже есть ноды и пользователи — сменить пароль в ней:"
+        info "    docker compose up -d db"
+        info "    docker compose exec db psql -U \$(sed -n 's/^POSTGRES_USER=//p' .env) \\"
+        info "        -c \"ALTER USER ... WITH PASSWORD '...';\"   # значения из .env"
+        die "установка остановлена" "Выберите один из двух путей выше и запустите скрипт снова"
+    fi
+
     info "Последние строки лога головы:"
-    docker compose logs --tail 25 head 2>&1 | sed 's/^/      /'
+    printf '%s\n' "$HEAD_LOG" | sed 's/^/      /'
     die "установка остановлена" "Исправьте причину выше и запустите ./install.sh снова"
 fi
 ok "голова отвечает"

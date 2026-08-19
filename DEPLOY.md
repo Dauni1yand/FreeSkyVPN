@@ -519,6 +519,33 @@ docker compose up -d
 головы. В compose это одна переменная, так что случается только при ручном
 запуске. В логе головы будет `invalid admin token`.
 
+**Голова не поднимается: `password authentication failed for user
+"freeskyvpn"`.** Пароль в `.env` верный — старым остался сам том с базой.
+Postgres задаёт пароль только когда инициализирует пустой каталог данных;
+том, созданный прошлой установкой, помнит прежний, и перезаполнение `.env`
+этого не меняет.
+
+Если данными можно пожертвовать (на первой установке — можно):
+
+```bash
+docker compose down
+docker volume rm freeskyvpn_pgdata     # имя проекта = имя каталога
+sudo ./install.sh
+```
+
+Если в базе уже есть ноды и пользователи — сменить пароль внутри неё под
+тот, что в `.env`:
+
+```bash
+docker compose up -d db
+docker compose exec db psql -U "$(grep ^POSTGRES_USER .env | cut -d= -f2-)" \
+    -c "ALTER USER \"$(grep ^POSTGRES_USER .env | cut -d= -f2-)\" WITH PASSWORD '$(grep ^POSTGRES_PASSWORD .env | cut -d= -f2-)';"
+docker compose up -d
+```
+
+По локальному сокету внутри контейнера пароль не спрашивается, поэтому
+команда проходит даже при разошедшихся паролях.
+
 **Забыт пароль админки.** `docker compose exec head python -m app.cli
 create-admin admin` — задаёт новый.
 
