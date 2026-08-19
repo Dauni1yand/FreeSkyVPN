@@ -67,6 +67,30 @@ class Storage(context: Context) {
         get() = plain.getString(KEY_COUNTRY, null)
         set(value) = plain.edit().putString(KEY_COUNTRY, value).apply()
 
+    // --- where the head lives --------------------------------------------
+
+    /**
+     * The address that most recently answered.
+     *
+     * Remembered so a client that already found a live host does not
+     * re-probe a dead primary at every launch and pay a connect timeout
+     * for it. Not encrypted: it is one of the addresses printed in the
+     * build, not a secret.
+     */
+    var lastGoodApiUrl: String?
+        get() = plain.getString(KEY_LAST_GOOD_API, null)
+        set(value) = plain.edit().putString(KEY_LAST_GOOD_API, value).apply()
+
+    /**
+     * A debug-only address typed by a tester.
+     *
+     * Read only when BuildConfig.DEBUG, so a release build cannot be
+     * pointed anywhere by anything.
+     */
+    var apiOverride: String?
+        get() = plain.getString(KEY_API_OVERRIDE, null)
+        set(value) = plain.edit().putString(KEY_API_OVERRIDE, value).apply()
+
     // --- split tunnel ----------------------------------------------------
 
     var routingPolicy: RoutingPolicy
@@ -95,6 +119,8 @@ class Storage(context: Context) {
         const val KEY_USER_ID = "user_id"
         const val KEY_VLESS = "vless_url"
         const val KEY_COUNTRY = "node_country"
+        const val KEY_LAST_GOOD_API = "last_good_api"
+        const val KEY_API_OVERRIDE = "api_override"
         const val KEY_POLICY = "routing_policy"
         const val KEY_SPLIT_ON = "split_tunnel_enabled"
         const val KEY_USER_EXCLUDED = "user_excluded"

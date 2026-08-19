@@ -1,6 +1,7 @@
 package ru.freeskyvpn.ui.screen
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -27,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.unit.dp
 import ru.freeskyvpn.ui.theme.Metrics
 import ru.freeskyvpn.ui.theme.SystemGreen
@@ -52,8 +54,11 @@ data class AppEntry(
 fun SettingsScreen(
     splitTunnelEnabled: Boolean,
     apps: List<AppEntry>,
+    /** Non-null only in debug builds; see [DebugServerCard]. */
+    apiOverride: String? = null,
     onSplitTunnelChanged: (Boolean) -> Unit,
     onAppToggled: (AppEntry, Boolean) -> Unit,
+    onApiOverrideChanged: (String) -> Unit = {},
     onBack: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -70,6 +75,11 @@ fun SettingsScreen(
             .padding(horizontal = Metrics.screenPadding),
     ) {
         ScreenHeader(title = "Настройки", onBack = onBack)
+
+        if (apiOverride != null) {
+            DebugServerCard(value = apiOverride, onChange = onApiOverrideChanged)
+            Spacer(Modifier.height(Metrics.itemSpacing))
+        }
 
         Card {
             SettingRow(
@@ -166,28 +176,69 @@ private fun SettingRow(
     }
 }
 
+/**
+ * Points a debug build at a different head without rebuilding.
+ *
+ * Useful precisely while testing, when the head might be a laptop one
+ * minute and the real server the next. Shown only in debug builds — the
+ * caller passes null otherwise — because a release build that could be
+ * aimed anywhere by anyone would be a way to hand somebody's token to a
+ * server we do not run.
+ *
+ * Empty means "use the addresses the build shipped with".
+ */
 @Composable
-private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
-    androidx.compose.foundation.text.BasicTextField(
-        value = query,
-        onValueChange = onQueryChange,
+private fun DebugServerCard(value: String, onChange: (String) -> Unit) {
+    Column {
+        SectionCaption("Сервер (только в debug)")
+        Card {
+            Column(modifier = Modifier.padding(14.dp)) {
+                PlainField(
+                    value = value,
+                    placeholder = "https://api.вашдомен.ru",
+                    onValueChange = onChange,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Пусто — используются адреса из сборки. " +
+                        "Открытый HTTP разрешён только к локальной сети.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun SearchField(query: String, onQueryChange: (String) -> Unit) =
+    PlainField(value = query, placeholder = "Поиск", onValueChange = onQueryChange)
+
+
+/** One unstyled text field, so the search box and the server box match. */
+@Composable
+private fun PlainField(value: String, placeholder: String, onValueChange: (String) -> Unit) {
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
         singleLine = true,
         textStyle = MaterialTheme.typography.bodyLarge.copy(
             color = MaterialTheme.colorScheme.onSurface
         ),
-        cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
         decorationBox = { inner ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surface)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
                     .padding(horizontal = 12.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (query.isEmpty()) {
+                if (value.isEmpty()) {
                     Text(
-                        "Поиск",
+                        placeholder,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

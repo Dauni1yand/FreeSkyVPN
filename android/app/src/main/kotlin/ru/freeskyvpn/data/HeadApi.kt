@@ -11,6 +11,7 @@ import ru.freeskyvpn.BuildConfig
 import ru.freeskyvpn.core.Account
 import ru.freeskyvpn.core.AdProgress
 import ru.freeskyvpn.core.AdTicket
+import ru.freeskyvpn.core.ApiEndpoints
 import ru.freeskyvpn.core.ConnectionConfig
 import ru.freeskyvpn.core.DeviceRegistration
 import ru.freeskyvpn.core.FailureOutcome
@@ -47,7 +48,18 @@ class HeadApi(private val storage: Storage) {
         .retryOnConnectionFailure(true)
         .build()
 
-    private val base = BuildConfig.HEAD_API_URL.trimEnd('/')
+    /**
+     * Addresses to try, most likely first.
+     *
+     * Recomputed per call rather than cached in a field: the debug override
+     * and the last-known-good address both change while the app is running,
+     * and a field captured at construction would ignore both until restart.
+     */
+    private fun endpoints(): List<String> = ApiEndpoints.resolve(
+        configured = ApiEndpoints.parse(BuildConfig.HEAD_API_URL),
+        override = if (BuildConfig.DEBUG) storage.apiOverride else null,
+        lastGood = storage.lastGoodApiUrl,
+    )
 
     // --- calls -----------------------------------------------------------
 
@@ -91,19 +103,15 @@ class HeadApi(private val storage: Storage) {
     // --- plumbing --------------------------------------------------------
 
     private suspend inline fun <reified T> get(path: String): T =
-        execute(requestBuilder(path).get().build())
+        attempt(path, authed = true) { it.get() }
 
     private suspend inline fun <reified T> post(
         path: String,
         body: String,
         authed: Boolean = true,
-    ): T = execute(
-        requestBuilder(path, authed)
-            .post(body.toRequestBody(JSON_MEDIA))
-            .build()
-    )
+    ): T = attempt(path, authed) { it.post(body.toRequestBody(JSON_MEDIA)) }
 
-    private fun requestBuilder(path: String, authed: Boolean = true): Request.Builder {
+    private fun requestBuilder(base: String, path: String, authed: Boolean): Request.Builder {
         val builder = Request.Builder()
             .url("$base$path")
             .header("X-Service-Token", BuildConfig.HEAD_SERVICE_TOKEN)
@@ -113,16 +121,50 @@ class HeadApi(private val storage: Storage) {
         return builder
     }
 
-    private suspend inline fun <reified T> execute(request: Request): T =
-        withContext(Dispatchers.IO) {
-            client.newCall(request).execute().use { response ->
-                val text = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    throw HttpError(response.code, detailOf(text, response.code))
+    /**
+     * Runs one request against each address until something answers.
+     *
+     * Only *transport* failures move on to the next address. An HTTP error
+     * means the head is there and said no, and retrying that against a
+     * backup would turn one honest 402 into three, then report whichever
+     * error the last host happened to give.
+     *
+     * The address that worked is remembered, so the next launch starts with
+     * it instead of paying a connect timeout on a dead primary.
+     */
+    private suspend inline fun <reified T> attempt(
+        path: String,
+        authed: Boolean,
+        crossinline build: (Request.Builder) -> Request.Builder,
+    ): T = withContext(Dispatchers.IO) {
+        val candidates = endpoints()
+        if (candidates.isEmpty()) {
+            throw IOException(
+                "адрес сервера не задан — соберите с -PheadApiUrl=https://…"
+            )
+        }
+
+        var lastTransportError: IOException? = null
+        for (base in candidates) {
+            val request = build(requestBuilder(base, path, authed)).build()
+            try {
+                client.newCall(request).execute().use { response ->
+                    val text = response.body?.string().orEmpty()
+                    // Reached it, whatever it said. Remember it and stop.
+                    storage.lastGoodApiUrl = base
+                    if (!response.isSuccessful) {
+                        throw HttpError(response.code, detailOf(text, response.code))
+                    }
+                    return@withContext json.decodeFromString<T>(text)
                 }
-                json.decodeFromString<T>(text)
+            } catch (e: HttpError) {
+                throw e
+            } catch (e: IOException) {
+                lastTransportError = e
             }
         }
+        throw lastTransportError ?: IOException("сервер недоступен")
+    }
 
     /** Pulls FastAPI's `detail` out of an error body, falling back to the status. */
     fun detailOf(body: String, code: Int): String =

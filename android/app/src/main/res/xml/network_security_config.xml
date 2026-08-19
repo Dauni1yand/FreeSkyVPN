@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Release: HTTPS only, everywhere, with no exceptions.
+
+    The connection to the head carries the per-user bearer token, and a
+    token on a plain connection is a token anyone on the same network has.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

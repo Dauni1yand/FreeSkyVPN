@@ -115,9 +115,22 @@ class MainActivity : ComponentActivity() {
 
                         Screen.Settings -> {
                             var splitOn by remember { mutableStateOf(vm.storage.splitTunnelEnabled) }
+                            // Null in release, which is what hides the field.
+                            // A build anyone could aim anywhere would be a way
+                            // to hand somebody's token to a server we do not run.
+                            var apiOverride by remember {
+                                mutableStateOf(
+                                    if (BuildConfig.DEBUG) vm.storage.apiOverride.orEmpty() else null
+                                )
+                            }
                             SettingsScreen(
                                 splitTunnelEnabled = splitOn,
                                 apps = apps,
+                                apiOverride = apiOverride,
+                                onApiOverrideChanged = { typed ->
+                                    apiOverride = typed
+                                    vm.storage.apiOverride = typed.ifBlank { null }
+                                },
                                 onSplitTunnelChanged = {
                                     vm.storage.splitTunnelEnabled = it
                                     splitOn = it

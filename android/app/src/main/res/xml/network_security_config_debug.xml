@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug builds only.
+
+    Cleartext is permitted at the platform level here so that a head running
+    on a developer's laptop can be reached without a domain and a
+    certificate. The platform cannot express "private ranges only" — it
+    matches domains, not subnets — so trying to scope it here produces a
+    narrow list that disagrees with what the app itself accepts, and the
+    symptom is an address the app takes and the system then silently drops.
+
+    The actual gate is in the app: ApiEndpoints.normalise refuses plain HTTP
+    to anything outside 10/8, 172.16/12, 192.168/16 and localhost, and that
+    rule is unit-tested. This file exists to stop the platform overriding a
+    decision that has already been made properly one layer up.
+
+    The release config permits no cleartext at all.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

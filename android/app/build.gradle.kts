@@ -61,8 +61,15 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
+            // Lets a debug build reach a head running on the developer's
+            // own machine. What stops this becoming plain HTTP to the
+            // internet is ApiEndpoints.normalise, which refuses cleartext
+            // outside private ranges and is unit-tested; the platform
+            // cannot express that rule, so it is not asked to.
+            manifestPlaceholders["networkSecurityConfig"] = "@xml/network_security_config_debug"
         }
         release {
+            manifestPlaceholders["networkSecurityConfig"] = "@xml/network_security_config"
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
