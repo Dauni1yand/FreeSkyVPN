@@ -14,6 +14,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from botapp.access_control import AdminOnlyMiddleware, allowed_chat_ids
 from botapp.api_client import HeadApi
 from botapp.config import get_settings
 from botapp.handlers import router
@@ -38,8 +39,20 @@ async def main() -> None:
     api = HeadApi()
 
     dispatcher = Dispatcher()
+    # Outer, so it runs before filters and covers every update type. A
+    # handler added later is gated by default rather than by remembering.
+    dispatcher.message.outer_middleware(AdminOnlyMiddleware())
+    dispatcher.callback_query.outer_middleware(AdminOnlyMiddleware())
     dispatcher.include_router(router)
     dispatcher["api"] = api
+
+    if not allowed_chat_ids():
+        # Not fatal: the bot still runs and refuses everyone, which is the
+        # safe direction. But it will look broken, so say why.
+        logger.warning(
+            "no TELEGRAM_ADMIN_CHAT_ID or TELEGRAM_ALLOWED_CHAT_IDS set — "
+            "the bot will answer nobody"
+        )
 
     workers = [
         asyncio.create_task(run_outbox_worker(bot, api)),

@@ -1,16 +1,17 @@
-"""Bot handlers.
+"""Bot handlers — an operator's console, not a client.
+
+The product is the Android app. This bot approves Xray updates, grants
+test access and links accounts, and none of that is for the public: two of
+them are actively dangerous in public hands, since granting access bypasses
+the advertising that pays for the servers and approving an update restarts
+nodes.
+
+Access to all of it is decided once, in access_control.py, by a middleware
+that runs before any handler here. Nothing in this file re-checks it.
 
 Every handler is a thin translation between a Telegram interaction and one
 head API call. Any decision worth making — which server, whether a config
 is dead, whether someone may connect — is made by the head.
-
-What the bot is *for* changed when the service became ad-funded. Telegram
-bots cannot show rewarded video; no such SDK exists. So the bot cannot
-participate in the economy that pays for the servers, and any access it
-hands out is a hole around the advertising. It is therefore a tool for
-testing and support, and granting access through it is restricted to the
-accounts named in TELEGRAM_ALLOWED_CHAT_IDS. Everyone else is pointed at
-the app.
 """
 
 from __future__ import annotations
@@ -188,32 +189,15 @@ async def on_update_decline(callback: CallbackQuery, api: HeadApi) -> None:
 # --- access, for testing and support only -------------------------------
 
 
-def _may_be_granted_access(telegram_id: int) -> bool:
-    """Whether this chat may get online through the bot.
-
-    Restricted because the bot cannot show ads: unrestricted, it would be
-    the free tier this service deliberately does not have. The admin chat
-    is always allowed so a new deployment can be tested before anything
-    else exists.
-    """
-    settings = get_settings()
-    allowed = {
-        chunk.strip()
-        for chunk in settings.telegram_allowed_chat_ids.split(",")
-        if chunk.strip()
-    }
-    if settings.telegram_admin_chat_id:
-        allowed.add(str(settings.telegram_admin_chat_id))
-    return str(telegram_id) in allowed
-
-
 @router.callback_query(F.data == keyboards.CB_ACCESS)
 async def on_access(callback: CallbackQuery, api: HeadApi) -> None:
-    if not _may_be_granted_access(callback.from_user.id):
-        await callback.answer()
-        await callback.message.answer(texts.USE_THE_APP, reply_markup=keyboards.main_menu())
-        return
+    """Put this operator's account online without an ad, for testing.
 
+    Reaching this handler already means the allowlist let the message
+    through (access_control.AdminOnlyMiddleware), so there is no second
+    check here — two places deciding the same thing is how they end up
+    disagreeing.
+    """
     user_id = await _user_id(api, callback.from_user.id)
     try:
         account = await api.grant_test_access(user_id)

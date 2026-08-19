@@ -19,15 +19,43 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
-        // The one thing that changes per deployment. Kept here rather than in
-        // code so a fork or a staging build needs no source edit.
+        // The two things that change per deployment. Read from Gradle
+        // properties so a fork or a staging build needs no source edit, and
+        // so the service token never sits in the repository.
+        //
+        // Put them in android/local.properties (git-ignored) or pass them on
+        // the command line:
+        //
+        //   ./gradlew :app:assembleDebug \
+        //       -PheadApiUrl=https://api.example.ru \
+        //       -PheadServiceToken=<HEAD_SECRET_KEY from the server .env>
         //
         // HTTPS is not negotiable: Android blocks cleartext by default, and
-        // the token this app carries must never cross a plain connection.
-        buildConfigField("String", "HEAD_API_URL", "\"https://api.freeskyvpn.ru\"")
+        // the per-user token this app carries must never cross a plain
+        // connection.
+        val headApiUrl = providers.gradleProperty("headApiUrl").getOrElse("")
+        val headServiceToken = providers.gradleProperty("headServiceToken").getOrElse("")
+
+        // Fail at configuration time rather than at the first API call. An
+        // empty token produces a 401 on every request, which reads as "the
+        // server is broken" and sends someone debugging the wrong machine.
+        if (headApiUrl.isBlank() || headServiceToken.isBlank()) {
+            logger.warn(
+                "\n" +
+                    "  ┌─ FreeSkyVPN ─────────────────────────────────────────────\n" +
+                    "  │ headApiUrl / headServiceToken не заданы.\n" +
+                    "  │ Приложение соберётся, но получит 401 на каждый запрос.\n" +
+                    "  │ Задайте их в android/local.properties:\n" +
+                    "  │     headApiUrl=https://api.вашдомен.ru\n" +
+                    "  │     headServiceToken=<HEAD_SECRET_KEY с сервера>\n" +
+                    "  └──────────────────────────────────────────────────────────"
+            )
+        }
+
+        buildConfigField("String", "HEAD_API_URL", "\"$headApiUrl\"")
         // Identifies the client build to the head. Not a user secret — it is
         // in the APK — which is exactly why per-user tokens exist alongside it.
-        buildConfigField("String", "HEAD_SERVICE_TOKEN", "\"${providers.gradleProperty("headServiceToken").getOrElse("")}\"")
+        buildConfigField("String", "HEAD_SERVICE_TOKEN", "\"$headServiceToken\"")
     }
 
     buildTypes {
