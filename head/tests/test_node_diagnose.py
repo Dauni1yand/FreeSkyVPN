@@ -143,3 +143,46 @@ def test_a_healthy_node_says_nothing_alarming(on_node):
     assert "НЕ слушается" not in report
     assert "не хватает" not in report
     assert "нет" not in report.split("последнее из лога")[0]
+
+
+# --- повторное добавление -------------------------------------------------
+
+
+def test_retrying_a_failed_node_continues_the_same_row(db, monkeypatch, tmp_path):
+    """Провижининг рассчитан на перезапуск после неудачи.
+
+    Но каждая попытка заводила новую строку: флот наполнялся
+    полупровизиненными дублями одного адреса, каждый со своим ключом, и все
+    они считались нодами — в том числе в сообщении «нет подходящей ноды».
+    """
+    from sqlalchemy import select
+
+    from app.db.models.node import Node
+    from app.services import crypto
+    from app.services import provisioning as prov
+
+    cert = tmp_path / "head_client_cert.pem"
+    cert.write_text("cert", encoding="utf-8")
+    monkeypatch.setattr(crypto, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        prov, "get_settings", lambda: SimpleNamespace(head_client_cert_path=str(cert))
+    )
+    monkeypatch.setattr(
+        prov.ssh_manager,
+        "check_connectivity",
+        lambda *_a, **_kw: (_ for _ in ()).throw(prov.SshError("нода молчит")),
+    )
+
+    for _ in range(3):
+        with pytest.raises(prov.ProvisioningError):
+            prov.provision_node(
+                db,
+                host="203.0.113.77",
+                country="nl",
+                ssh_user="root",
+                ssh_password="x",
+            )
+        db.commit()
+
+    rows = db.scalars(select(Node).where(Node.host == "203.0.113.77")).all()
+    assert len(rows) == 1, f"после трёх попыток строк должно быть одна, а не {len(rows)}"

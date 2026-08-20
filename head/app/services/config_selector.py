@@ -121,19 +121,25 @@ def _why_nothing_eligible(db: Session, tier: Tier) -> str:
     if not nodes:
         return "нод не зарегистрировано"
 
-    draining = sum(1 for n in nodes if n.status != NodeStatus.active)
-    isolated = sum(
-        1
+    draining = [n for n in nodes if n.status != NodeStatus.active]
+    isolated = [
+        n
         for n in nodes
         if n.status == NodeStatus.active and n.channel_state == NodeChannelState.isolated
-    )
-    full = len(nodes) - draining - isolated
+    ]
+    full = len(nodes) - len(draining) - len(isolated)
+
+    def _hosts(chosen: list[Node]) -> str:
+        # Адреса, а не только счётчики: на флоте из одной ноды «1 недоступна»
+        # не говорит, какая именно, а на большом — куда идти смотреть.
+        shown = ", ".join(n.host for n in chosen[:3])
+        return shown + (f" и ещё {len(chosen) - 3}" if len(chosen) > 3 else "")
 
     parts = [f"всего нод {len(nodes)}"]
     if isolated:
-        parts.append(f"{isolated} недоступны по управляющему каналу")
+        parts.append(f"недоступны по управляющему каналу: {_hosts(isolated)}")
     if draining:
-        parts.append(f"{draining} выведены из ротации")
+        parts.append(f"выведены из ротации: {_hosts(draining)}")
     if full:
         ceiling = "80% ёмкости" if tier == Tier.grace else "ёмкости"
         parts.append(f"{full} заполнены до {ceiling}")

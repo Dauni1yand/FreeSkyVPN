@@ -26,6 +26,7 @@ def test_an_unreachable_node_is_named_as_unreachable(db):
 
     reason = _why_nothing_eligible(db, Tier.full)
     assert "недоступны по управляющему каналу" in reason
+    assert node.host in reason, "нужно назвать адрес, а не только количество"
     assert "не зарегистрировано" not in reason, "нода есть, дело не в этом"
 
 
@@ -66,6 +67,8 @@ def test_a_mixed_fleet_accounts_for_every_node(db):
 
     reason = _why_nothing_eligible(db, Tier.full)
     assert "всего нод 3" in reason
-    assert "1 недоступны" in reason
-    assert "1 выведены" in reason
+    # Адреса, а не счётчики: на флоте из одной ноды «1 недоступна» не
+    # говорит, какая именно, а на большом — куда идти смотреть.
+    assert "203.0.113.1" in reason
+    assert "203.0.113.2" in reason
     assert "1 заполнены" in reason

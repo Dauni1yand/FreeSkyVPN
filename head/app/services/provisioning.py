@@ -92,19 +92,29 @@ def provision_node(
         )
 
     log: list[str] = []
-    node = Node(
-        host=host,
-        country=country,
-        ssh_user=ssh_user,
-        ssh_port=ssh_port,
-        control_port=control_port,
-        uplink_mbit=uplink_mbit,
-        capacity=capacity,
-        # Not yet usable: it has no control-channel inbound and no pinned
-        # certificate, so the selector must not hand users to it.
-        status=NodeStatus.draining,
-    )
-    db.add(node)
+
+    # Повторная попытка для того же адреса продолжает прежнюю запись, а не
+    # заводит вторую. Провижининг рассчитан на перезапуск после неудачи —
+    # так и написано в документации, — но каждая попытка создавала новую
+    # строку: флот тихо наполнялся полупровизиненными дублями, каждый со
+    # своим ключом, и все они считались нодами.
+    node = db.scalar(select(Node).where(Node.host == host))
+    if node is None:
+        node = Node(host=host)
+        db.add(node)
+        log.append("новая нода")
+    else:
+        log.append(f"нода {host} уже была заведена, продолжаю её")
+
+    node.country = country
+    node.ssh_user = ssh_user
+    node.ssh_port = ssh_port
+    node.control_port = control_port
+    node.uplink_mbit = uplink_mbit
+    node.capacity = capacity
+    # Not yet usable: it has no control-channel inbound and no pinned
+    # certificate, so the selector must not hand users to it.
+    node.status = NodeStatus.draining
     db.flush()
 
     try:
