@@ -128,6 +128,29 @@ def cli_json(*args: str):
         return None
 
 
+def container_state(service: str) -> str | None:
+    """Что с контейнером на самом деле, а не что написано в .env.
+
+    Настройка и работающий процесс — разные вещи, и путать их дорого:
+    экран показывал «egress включён», потому что профиль стоял в .env,
+    а контейнер при этом перезапускался по кругу.
+    """
+    result = subprocess.run(
+        ["docker", "compose", "ps", "-a", "--format", "{{.Service}} {{.State}}"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == service:
+            return parts[1]
+    return None
+
+
 def stale_image() -> str | None:
     """Собран ли контейнер головы из того же кода, что лежит рядом.
 
@@ -367,8 +390,17 @@ def screen_telegram() -> None:
         profiles = env.get("COMPOSE_PROFILES", "")
         egress_on = "egress" in profiles
 
+        state = container_state("egress") if egress_on else None
         print(f"  Выход к Telegram   {proxy or 'напрямую'}")
-        print(f"  Контейнер egress   {'включён' if egress_on else 'выключен'}")
+        if not egress_on:
+            print("  Контейнер egress   выключен")
+        elif state == "running":
+            print(f"  Контейнер egress   {GRN}работает{OFF}")
+        elif state is None:
+            print(f"  Контейнер egress   {YEL}включён в .env, но не создан{OFF}")
+            info("Поднять: docker compose up -d  (или пункт 5 → 4)")
+        else:
+            print(f"  Контейнер egress   {RED}{state}{OFF}")
         print(f"  Операторы бота     {env.get('TELEGRAM_ALLOWED_CHAT_IDS') or env.get('TELEGRAM_ADMIN_CHAT_ID') or '— никого'}")
         if not (env.get("TELEGRAM_ALLOWED_CHAT_IDS") or env.get("TELEGRAM_ADMIN_CHAT_ID")):
             warn("бот не ответит никому, включая вас — впишите свой id")
@@ -383,10 +415,21 @@ def screen_telegram() -> None:
             return
         if choice == "1":
             print()
-            subprocess.call(
+            failed = subprocess.call(
                 ["docker", "compose", "exec", "-T", "head", "python", "-c", TELEGRAM_PROBE],
                 cwd=REPO,
             )
+            if failed and egress_on:
+                # «Connection refused» на egress:1080 значит только, что
+                # никто не слушает. Почему — знает сам egress, и написано
+                # это в его логе: чаще всего ему не у чего взять конфиг,
+                # потому что активной ноды пока нет.
+                print(f"\n{DIM}  последнее от контейнера egress:{OFF}")
+                compose("logs", "--tail", "8", "--no-log-prefix", "egress")
+                nodes = cli_json("list-nodes", "--json")
+                if nodes is not None and not any(n["status"] == "active" for n in nodes):
+                    warn("активной ноды нет — выходить egress пока не через что")
+                    info("Сначала добавьте ноду: раздел «Ноды» → a")
             pause()
         elif choice == "2":
             if egress_on:
