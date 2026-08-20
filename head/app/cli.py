@@ -9,6 +9,7 @@
     python -m app.cli node-capacity <id> <N>
     python -m app.cli node-status <id> <active|draining>
     python -m app.cli node-delete <id>
+    python -m app.cli node-scan-ports <id>
     python -m app.cli grant <user-id> [минут]
     python -m app.cli egress-url
 
@@ -301,6 +302,7 @@ def _node_row(db, node: Node) -> dict:
         "capacity": node.capacity,
         "uplink_mbit": node.uplink_mbit,
         "users": _live_users(db, node),
+        "occupied_ports": node.occupied_ports,
     }
 
 
@@ -431,6 +433,39 @@ def node_delete(argv: list[str]) -> int:
     return 0
 
 
+def node_scan_ports(argv: list[str]) -> int:
+    """Перечитать, что на ноде занято не нами.
+
+    Провижининг делает это один раз. Хостер может поднять панель позже, и
+    тогда порт, который голова считает свободным, начнёт молча ломать
+    выдаваемые на нём конфиги.
+    """
+    parser = argparse.ArgumentParser(prog="node-scan-ports")
+    parser.add_argument("node")
+    args = parser.parse_args(argv)
+
+    with SessionLocal() as db:
+        node = _find_node(db, args.node)
+        if node is None:
+            print("нода не найдена", file=sys.stderr)
+            return 1
+        try:
+            foreign, clashing = provisioning.rescan_ports(db, node)
+        except SshError as exc:
+            print(f"не подключиться к ноде: {exc}", file=sys.stderr)
+            return 1
+        db.commit()
+
+    if not foreign:
+        print(f"{node.host}: чужого на портах ничего не слушает")
+        return 0
+    print(f"{node.host}: занято не нами — {', '.join(str(p) for p in foreign)}")
+    if clashing:
+        print("Из них выдаваемых нами: " + ", ".join(str(p) for p in clashing))
+        print("Эти порты больше не будут предлагаться новым инбаундам.")
+    return 0
+
+
 def grant(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="grant")
     parser.add_argument("user_id")
@@ -484,6 +519,7 @@ COMMANDS = {
     "node-capacity": node_capacity,
     "node-status": node_status,
     "node-delete": node_delete,
+    "node-scan-ports": node_scan_ports,
     "grant": grant,
     "egress-url": egress_url,
 }

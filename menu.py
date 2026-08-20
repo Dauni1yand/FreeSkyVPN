@@ -203,10 +203,16 @@ def screen_nodes() -> None:
                 f"{state:<9} канал:{node['channel']:<9} "
                 f"{node['users']}/{node['capacity']}"
             )
+            taken = node.get("occupied_ports")
+            if taken is None:
+                info("порты не проверялись — нажмите p, чтобы посмотреть")
+            elif taken:
+                info("занято не нами: " + ", ".join(str(port) for port in taken))
 
         print(f"\n  {BOLD}a{OFF} добавить   {BOLD}c{OFF} проверить связь   "
-              f"{BOLD}e{OFF} ёмкость   {BOLD}s{OFF} в ротацию / из ротации   "
-              f"{BOLD}d{OFF} удалить   {BOLD}0{OFF} назад")
+              f"{BOLD}p{OFF} перечитать порты   {BOLD}e{OFF} ёмкость   "
+              f"{BOLD}s{OFF} в ротацию / из ротации   {BOLD}d{OFF} удалить   "
+              f"{BOLD}0{OFF} назад")
         choice = input("\n  > ").strip().lower()
 
         if choice in ("0", "q", ""):
@@ -236,7 +242,11 @@ def screen_nodes() -> None:
         node = _pick(nodes, choice)
         if node is None:
             continue
-        if choice == "e":
+        if choice == "p":
+            print()
+            cli("node-scan-ports", node["id"])
+            pause()
+        elif choice == "e":
             value = ask(f"Новая ёмкость для {node['host']}", str(node["capacity"]))
             if value.isdigit():
                 print()
@@ -262,7 +272,7 @@ def _pick(nodes: list[dict], action: str) -> dict | None:
         fail("нод нет")
         pause()
         return None
-    if action not in ("e", "s", "d"):
+    if action not in ("e", "s", "d", "p"):
         return None
     raw = ask("Номер ноды")
     if not raw.isdigit() or not 1 <= int(raw) <= len(nodes):

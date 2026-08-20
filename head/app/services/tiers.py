@@ -94,3 +94,13 @@ def bootstrap_arguments() -> dict[str, str]:
         "paid_range": "{}-{}".format(*TIER_FALLBACK_RANGE[Tier.full]),
         "free_range": "{}-{}".format(*TIER_FALLBACK_RANGE[Tier.grace]),
     }
+
+
+def all_ports() -> tuple[int, ...]:
+    """Every preferred port, both classes together.
+
+    Used to report which of them a node already has taken. The fallback
+    ranges are deliberately not included: they are twenty thousand ports
+    wide, so naming the handful that happen to be busy would say nothing.
+    """
+    return tuple(port for ports in TIER_PORTS.values() for port in ports)

@@ -65,6 +65,12 @@ def pick_port(db: Session, node: Node, tier: Tier = Tier.grace) -> int:
     # A live inbound holds its port open — that one is a hard conflict.
     live_ports = {port for port, state, _ in rows if state != InboundState.dead}
 
+    # And so does anything on the node that was never ours. Read once while
+    # provisioning still had a shell; NULL means we never looked, which is
+    # not the same as nothing being there — nodes added before that probe
+    # existed keep the old behaviour rather than being assumed empty.
+    live_ports |= set(node.occupied_ports or ())
+
     cutoff = datetime.now(UTC) - timedelta(minutes=settings.inbound_fail_window_minutes)
     recently_burned = {
         port

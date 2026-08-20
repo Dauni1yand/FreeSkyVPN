@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Enum,
@@ -70,6 +71,19 @@ class Node(Base):
     # before it (see config_selector), which is what keeps room for paying
     # ones on a busy node.
     capacity: Mapped[int] = mapped_column(Integer, default=200)
+
+    # TCP ports already held by something that is not ours, read from the
+    # node while provisioning still had a shell.
+    #
+    # The head picks inbound ports from a short list of ordinary HTTPS ports.
+    # A hoster panel on 8443 or a web server on 443 means Xray cannot bind
+    # the port it was told to use, and the user gets a config that connects
+    # to nothing — with no signal but them pressing "не работает". Knowing
+    # what is taken turns that into a port we simply never offer.
+    #
+    # NULL means never probed, which is not the same as "nothing is taken"
+    # and is why this is nullable rather than an empty list by default.
+    occupied_ports: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
 
     # marzban-node generates its own self-signed cert on first boot; the head
     # captures it during provisioning and pins it as the only cert it will

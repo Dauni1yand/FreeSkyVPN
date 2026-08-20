@@ -148,6 +148,57 @@ def _why_unreachable(node: Node, exc: Exception) -> str:
     return f"cannot reach {where}: {exc}"
 
 
+
+def listening_ports(client: paramiko.SSHClient) -> set[int]:
+    """Which TCP ports are already taken on the node.
+
+    Asked once, while provisioning still has a shell, because the head
+    otherwise has no way to find out: it picks an inbound's port from a
+    fixed list of ordinary HTTPS ports, and if the hoster already runs a
+    panel on one of them, Xray fails to bind it. The user then gets a
+    config that connects to nothing, and the only signal is them pressing
+    "не работает".
+
+    A loopback-only listener counts as taken: binding 0.0.0.0:P while
+    127.0.0.1:P is held fails just the same.
+
+    Fails open. A node whose `ss` is missing or unparsable should still
+    provision — we simply learn nothing and pick ports as before, which is
+    the behaviour that existed before this function.
+    """
+    for command in ("ss -H -ltn", "netstat -ltn"):
+        result = run(client, command)
+        if result.exit_status != 0:
+            continue
+        ports = _parse_listening(result.stdout)
+        if ports:
+            return ports
+    logger.warning("could not read listening ports; picking without that knowledge")
+    return set()
+
+
+def _parse_listening(output: str) -> set[int]:
+    """Pull ports out of `ss`/`netstat` output.
+
+    Both put the local address in a column that ends in `:port`, with IPv6
+    written as `[::]:443` and wildcards as `*:443`, so taking the tail after
+    the final colon covers every form either tool produces.
+    """
+    ports: set[int] = set()
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        for field in fields:
+            if ":" not in field:
+                continue
+            tail = field.rsplit(":", 1)[-1]
+            if tail.isdigit() and 0 < int(tail) < 65536:
+                ports.add(int(tail))
+                break
+    return ports
+
+
 def run(client: paramiko.SSHClient, command: str, *, stdin_data: str | None = None) -> CommandResult:
     stdin, stdout, stderr = client.exec_command(command, timeout=300)
     if stdin_data is not None:

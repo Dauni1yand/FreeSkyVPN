@@ -93,6 +93,7 @@ def test_list_nodes_json_carries_every_field_the_menu_prints(db, capsys):
         "capacity",
         "uplink_mbit",
         "users",
+        "occupied_ports",
     }
 
 
@@ -191,6 +192,16 @@ def test_a_node_row_survives_a_missing_uplink(db, capsys):
 
     cli.list_nodes(["--json"])
     assert _json(capsys)[0]["uplink_mbit"] is None
+
+
+def test_occupied_ports_reach_the_menu(db, capsys):
+    """Меню предупреждает о чужих портах — значит должно их видеть."""
+    node = make_node(db)
+    node.occupied_ports = [443, 8443]
+    db.commit()
+
+    cli.list_nodes(["--json"])
+    assert _json(capsys)[0]["occupied_ports"] == [443, 8443]
 
 
 def test_a_node_with_no_users_reports_zero_not_null(db, capsys):

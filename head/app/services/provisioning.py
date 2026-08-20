@@ -22,10 +22,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models.node import Inbound, Node, NodeStatus
+from app.db.models.node import Inbound, InboundState, Node, NodeStatus
 from app.services import crypto, ssh_manager, tiers
 from app.services.ssh_manager import SshError
 
@@ -114,6 +115,30 @@ def provision_node(
         # From here on the key works, so the operator's password is no longer
         # needed and is not passed again.
         with ssh_manager.connect(node) as client:
+            # Asked before bootstrap, while nothing of ours is running yet:
+            # afterwards marzban-node holds the control port and the answer
+            # would include our own listeners.
+            occupied = ssh_manager.listening_ports(client)
+            node.occupied_ports = sorted(occupied)
+            db.flush()
+
+            clashing = sorted(occupied & set(tiers.all_ports()))
+            if clashing:
+                log.append(
+                    "ports already in use on the node, they will not be handed out: "
+                    + ", ".join(str(port) for port in clashing)
+                )
+
+            control_port = _free_port(control_port, occupied, CONTROL_PORT_RANGE)
+            if control_port != node.control_port:
+                log.append(f"control port {node.control_port} was taken, using {control_port}")
+                node.control_port = control_port
+                db.flush()
+
+            control_reality_port = _free_port(
+                control_reality_port, occupied, CONTROL_REALITY_FALLBACKS
+            )
+
             sftp = client.open_sftp()
             try:
                 sftp.put(str(cert_path), REMOTE_CERT_PATH)
@@ -159,6 +184,31 @@ def provision_node(
         raise ProvisioningError(f"{exc}\n\n" + "\n".join(log)) from exc
 
 
+
+#: Куда уходить, если marzban-node не может занять свой порт по умолчанию.
+CONTROL_PORT_RANGE = tuple(range(62050, 62100))
+
+#: То же для Reality-инбаунда канала управления. Обычные HTTPS-порты — он
+#: должен выглядеть как ещё один клиентский, а не как канал управления.
+CONTROL_REALITY_FALLBACKS = (8443, 2096, 2087, 2083, 2053, 443)
+
+
+def _free_port(preferred: int, occupied: set[int], candidates) -> int:
+    """The preferred port if nothing holds it, otherwise the first that is free.
+
+    Falls back to the preferred port when every candidate is taken: the
+    bootstrap then fails on a bind with a message naming the port, which is
+    a clearer outcome than provisioning a node onto a port chosen by
+    desperation.
+    """
+    if preferred not in occupied:
+        return preferred
+    for candidate in candidates:
+        if candidate not in occupied:
+            return candidate
+    return preferred
+
+
 def _parse_bootstrap_output(stdout: str) -> dict:
     lines = [line for line in stdout.strip().splitlines() if line.strip()]
     if not lines:
@@ -190,6 +240,37 @@ def _apply_bootstrap_payload(db: Session, node: Node, payload: dict) -> None:
         )
     )
     db.flush()
+
+
+def rescan_ports(db: Session, node: Node) -> tuple[list[int], list[int]]:
+    """Ask an already-provisioned node what is holding its ports now.
+
+    Provisioning reads this once, before anything of ours is running. By
+    then the answer is clean; afterwards it is not, because our own Xray is
+    listening on every inbound we handed out. So this subtracts what we know
+    is ours before storing — otherwise a rescan would slowly convince the
+    head that its own ports are unavailable and push every new inbound onto
+    the fallback range.
+
+    Returns (что занято чужим, что из наших предпочтительных портов задето).
+    """
+    with ssh_manager.connect(node) as client:
+        seen = ssh_manager.listening_ports(client)
+
+    ours = {
+        port
+        for (port,) in db.execute(
+            select(Inbound.port).where(
+                Inbound.node_id == node.id, Inbound.state != InboundState.dead
+            )
+        ).all()
+    }
+    ours.add(node.control_port)
+
+    foreign = sorted(seen - ours)
+    node.occupied_ports = foreign
+    db.flush()
+    return foreign, sorted(set(foreign) & set(tiers.all_ports()))
 
 
 def rotate_node_password(db: Session, node: Node) -> None:
