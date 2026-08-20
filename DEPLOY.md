@@ -189,7 +189,15 @@ docker compose exec head python -m app.cli node-status <ip> draining
 docker compose exec head python -m app.cli node-delete <ip>
 docker compose exec head python -m app.cli grant <user_id> 60
 docker compose exec head python -m app.cli node-scan-ports <ip>
+docker compose exec head python -m app.cli node-diagnose <ip>
 ```
+
+`node-diagnose` заходит на ноду по ssh и смотрит, почему до неё не
+достучаться: запущен ли контейнер `marzban-node`, слушается ли управляющий
+порт, на месте ли сертификаты, и что в логе контейнера. Нужна, когда голова
+пишет «unreachable via direct or tunnel: Connection refused» — это значит,
+что пакет до ноды дошёл, а на порту никто не слушает, и дальше вариантов
+всего несколько, но все они видны только с самой ноды.
 
 `node-scan-ports` перечитывает занятые порты у уже подключённой ноды —
 хостер может поднять панель позже, и тогда порт, который голова считает

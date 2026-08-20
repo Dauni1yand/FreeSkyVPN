@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 # Source checkout layout: <repo>/head/app/services/ -> <repo>/provisioning/
 DEFAULT_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parents[3] / "provisioning" / "bootstrap_node.sh"
 REMOTE_CERT_PATH = "/root/freeskyvpn_head_client_cert.pem"
+#: Куда bootstrap_node.sh кладёт сертификаты ноды — должно совпадать с ним.
+MARZBAN_NODE_DIR = "/var/lib/marzban-node"
 
 
 @dataclass
@@ -269,6 +271,54 @@ def _apply_bootstrap_payload(db: Session, node: Node, payload: dict) -> None:
         )
     )
     db.flush()
+
+
+def diagnose_node(node: Node) -> list[str]:
+    """Посмотреть на ноду глазами головы и сказать, что с ней не так.
+
+    Управляющий канал отвечает «Connection refused» — это значит, что пакет
+    до ноды дошёл, а на порту никто не слушает. Дальше вариантов немного, и
+    все они видны с самой ноды: контейнер не запущен, запущен и падает, или
+    слушает не тот порт. Через SSH голова туда попадает — ключ у неё уже
+    есть, — так что спрашивать человека «посмотрите на ноде» незачем.
+    """
+    report: list[str] = []
+    with ssh_manager.connect(node) as client:
+        status = ssh_manager.run(client, "docker inspect -f '{{.State.Status}}' marzban-node")
+        state = status.stdout.strip()
+        if status.exit_status != 0 or not state:
+            report.append("контейнера marzban-node на ноде нет")
+            images = ssh_manager.run(client, "docker images -q gozargah/marzban-node")
+            if not images.stdout.strip():
+                report.append("образ тоже не скачан — bootstrap не дошёл до запуска")
+            report.append("Поднять заново: /usr/local/sbin/freeskyvpn-start-node.sh")
+        else:
+            report.append(f"контейнер marzban-node: {state}")
+            if state != "running":
+                exit_code = ssh_manager.run(
+                    client, "docker inspect -f '{{.State.ExitCode}}' marzban-node"
+                )
+                report.append(f"код выхода: {exit_code.stdout.strip()}")
+
+        listening = ssh_manager.listening_ports(client)
+        if node.control_port in listening:
+            report.append(f"управляющий порт {node.control_port} слушается")
+        else:
+            report.append(f"управляющий порт {node.control_port} НЕ слушается")
+
+        certs = ssh_manager.run(client, f"ls -1 {MARZBAN_NODE_DIR} 2>/dev/null")
+        present = set(certs.stdout.split())
+        missing = {"ssl_cert.pem", "ssl_key.pem", "ssl_client_cert.pem"} - present
+        if missing:
+            report.append("не хватает файлов сертификатов: " + ", ".join(sorted(missing)))
+
+        logs = ssh_manager.run(client, "docker logs --tail 20 marzban-node 2>&1")
+        tail = [line for line in logs.stdout.splitlines() if line.strip()]
+        if tail:
+            report.append("последнее из лога контейнера:")
+            report.extend(f"    {line}" for line in tail[-12:])
+
+    return report
 
 
 def rescan_ports(db: Session, node: Node) -> tuple[list[int], list[int]]:

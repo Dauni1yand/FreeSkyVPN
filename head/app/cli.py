@@ -10,6 +10,7 @@
     python -m app.cli node-status <id> <active|draining>
     python -m app.cli node-delete <id>
     python -m app.cli node-scan-ports <id>
+    python -m app.cli node-diagnose <id>
     python -m app.cli version
     python -m app.cli grant <user-id> [минут]
     python -m app.cli egress-url
@@ -436,6 +437,31 @@ def node_delete(argv: list[str]) -> int:
     return 0
 
 
+def node_diagnose(argv: list[str]) -> int:
+    """Почему голова не достучится до ноды — глядя с самой ноды."""
+    parser = argparse.ArgumentParser(prog="node-diagnose")
+    parser.add_argument("node")
+    args = parser.parse_args(argv)
+
+    with SessionLocal() as db:
+        node = _find_node(db, args.node)
+        if node is None:
+            print("нода не найдена", file=sys.stderr)
+            return 1
+        print(f"смотрю {node.host} по ssh…", flush=True)
+        try:
+            report = provisioning.diagnose_node(node)
+        except SshError as exc:
+            print(f"\nне зайти по ssh: {exc}", file=sys.stderr)
+            print("Ключ головы мог не установиться — попробуйте добавить ноду заново.", file=sys.stderr)
+            return 1
+
+    print()
+    for line in report:
+        print(f"  {line}")
+    return 0
+
+
 def node_scan_ports(argv: list[str]) -> int:
     """Перечитать, что на ноде занято не нами.
 
@@ -534,6 +560,7 @@ COMMANDS = {
     "node-status": node_status,
     "node-delete": node_delete,
     "node-scan-ports": node_scan_ports,
+    "node-diagnose": node_diagnose,
     "version": version,
     "grant": grant,
     "egress-url": egress_url,

@@ -282,7 +282,8 @@ def screen_nodes() -> None:
                 info("занято не нами: " + ", ".join(str(port) for port in taken))
 
         print(f"\n  {BOLD}a{OFF} добавить   {BOLD}c{OFF} проверить связь   "
-              f"{BOLD}p{OFF} перечитать порты   {BOLD}e{OFF} ёмкость   "
+              f"{BOLD}p{OFF} перечитать порты   {BOLD}g{OFF} диагностика   "
+              f"{BOLD}e{OFF} ёмкость   "
               f"{BOLD}s{OFF} в ротацию / из ротации   {BOLD}d{OFF} удалить   "
               f"{BOLD}0{OFF} назад")
         choice = input("\n  > ").strip().lower()
@@ -318,6 +319,10 @@ def screen_nodes() -> None:
             print()
             cli("node-scan-ports", node["id"])
             pause()
+        elif choice == "g":
+            print()
+            cli("node-diagnose", node["id"])
+            pause()
         elif choice == "e":
             value = ask(f"Новая ёмкость для {node['host']}", str(node["capacity"]))
             if value.isdigit():
@@ -344,7 +349,7 @@ def _pick(nodes: list[dict], action: str) -> dict | None:
         fail("нод нет")
         pause()
         return None
-    if action not in ("e", "s", "d", "p"):
+    if action not in ("e", "s", "d", "p", "g"):
         return None
     raw = ask("Номер ноды")
     if not raw.isdigit() or not 1 <= int(raw) <= len(nodes):
