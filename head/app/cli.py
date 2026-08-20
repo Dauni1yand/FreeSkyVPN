@@ -10,6 +10,7 @@
     python -m app.cli node-status <id> <active|draining>
     python -m app.cli node-delete <id>
     python -m app.cli node-scan-ports <id>
+    python -m app.cli version
     python -m app.cli grant <user-id> [минут]
     python -m app.cli egress-url
 
@@ -35,6 +36,7 @@ import sys
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import func, select
 
@@ -46,6 +48,7 @@ from app.services import access, egress, provisioning
 from app.services.admin_auth import ensure_admin
 from app.services.config_selector import NoCapacityError, assign_config
 from app.services.ssh_manager import SshError
+from app.version import source_fingerprint
 
 
 def create_admin(argv: list[str]) -> int:
@@ -466,6 +469,17 @@ def node_scan_ports(argv: list[str]) -> int:
     return 0
 
 
+def version(_argv: list[str]) -> int:
+    """Отпечаток кода, из которого собран этот контейнер.
+
+    Меню сверяет его с рабочим каталогом. Расхождение означает образ,
+    собранный из прежних исходников, — самый незаметный способ починить
+    ошибку и продолжать её видеть.
+    """
+    print(source_fingerprint(Path(__file__).resolve().parent))
+    return 0
+
+
 def grant(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="grant")
     parser.add_argument("user_id")
@@ -520,6 +534,7 @@ COMMANDS = {
     "node-status": node_status,
     "node-delete": node_delete,
     "node-scan-ports": node_scan_ports,
+    "version": version,
     "grant": grant,
     "egress-url": egress_url,
 }

@@ -20,6 +20,7 @@ loopback: чтобы до неё добраться, нужен туннель �
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 ENV_FILE = REPO / ".env"
+HEAD_PACKAGE = REPO / "head" / "app"
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -124,6 +126,53 @@ def cli_json(*args: str):
         fail("не разобрать ответ головы")
         info(result.stdout[:200])
         return None
+
+
+def stale_image() -> str | None:
+    """Собран ли контейнер головы из того же кода, что лежит рядом.
+
+    Dockerfile копирует исходники внутрь образа, поэтому `docker compose up
+    -d` без `--build` поднимает прежний код. Снаружи это выглядит как
+    обновление, которое ничего не изменило: та же ошибка, та же строка.
+    Проверка стоит одного вызова и снимает целый класс потерянного времени.
+
+    Возвращает подсказку, если образ отстал, и None во всех остальных
+    случаях, включая невозможность проверить — сомнение не повод пугать.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "freeskyvpn_version", HEAD_PACKAGE / "version.py"
+    )
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        here = module.source_fingerprint(HEAD_PACKAGE)
+    except (AttributeError, OSError, SyntaxError, ValueError):
+        # Модуля нет, он не читается или в нём нет этой функции — всё это
+        # означает «не смогли проверить», а не «образ устарел».
+        return None
+
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "head", "python", "-m", "app.cli", "version"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        # Голова, собранная до появления этой команды, отвечает подсказкой
+        # по использованию. Это не «не смогли проверить», а самый ясный
+        # признак устаревшего образа — и ровно тот случай, в котором
+        # проверка нужнее всего, так что пропустить его нельзя.
+        if "usage:" in (result.stderr + result.stdout):
+            return "контейнер собран из кода, который старше этой проверки"
+        return None
+
+    there = result.stdout.strip()
+    if not there or there == here:
+        return None
+    return f"контейнер собран из другого кода ({there} вместо {here})"
 
 
 # --- .env ------------------------------------------------------------------
@@ -465,6 +514,11 @@ def main() -> int:
     while True:
         clear()
         print(f"\n{BOLD}  FreeSkyVPN{OFF}")
+        outdated = stale_image()
+        if outdated:
+            print(f"{YEL}  ! {outdated}{OFF}")
+            print(f"{DIM}    Изменения в коде попадают в контейнер только при пересборке:{OFF}")
+            print(f"{DIM}    docker compose up -d --build   (или пункт 5 → 5){OFF}")
         data = cli_json("status", "--json")
         if data is None:
             info("Стек не запущен? docker compose up -d")
