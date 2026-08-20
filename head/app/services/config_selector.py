@@ -108,6 +108,40 @@ def eligible_nodes(
     return nodes
 
 
+
+def _why_nothing_eligible(db: Session, tier: Tier) -> str:
+    """Что именно вывело ноды из отбора.
+
+    Без этого «нет подходящей ноды» одинаково звучит и когда нод нет вовсе,
+    и когда они есть, но изолированы, и когда они просто заполнены. Лечится
+    это тремя разными способами, а строка была одна, и по ней нельзя было
+    выбрать даже направление.
+    """
+    nodes = db.scalars(select(Node)).all()
+    if not nodes:
+        return "нод не зарегистрировано"
+
+    draining = sum(1 for n in nodes if n.status != NodeStatus.active)
+    isolated = sum(
+        1
+        for n in nodes
+        if n.status == NodeStatus.active and n.channel_state == NodeChannelState.isolated
+    )
+    full = len(nodes) - draining - isolated
+
+    parts = [f"всего нод {len(nodes)}"]
+    if isolated:
+        parts.append(f"{isolated} недоступны по управляющему каналу")
+    if draining:
+        parts.append(f"{draining} выведены из ротации")
+    if full:
+        ceiling = "80% ёмкости" if tier == Tier.grace else "ёмкости"
+        parts.append(f"{full} заполнены до {ceiling}")
+        if tier == Tier.grace:
+            parts.append("остаток держится для тех, кто посмотрел рекламу")
+    return "; ".join(parts)
+
+
 def live_inbound(
     db: Session, node: Node, tier: Tier, exclude_inbound_ids: set | None = None
 ) -> Inbound | None:
@@ -156,8 +190,8 @@ def assign_config(
         # remaining headroom is being held for paying users, which is what
         # "paid goes first under load" means at admission time.
         raise NoCapacityError(
-            f"no node is currently accepting {tier.value}-class users"
-            + (" — headroom is held back for users on earned access" if tier == Tier.grace else "")
+            f"no node is currently accepting {tier.value}-class users: "
+            + _why_nothing_eligible(db, tier)
         )
 
     previous = active_assignment(db, user)

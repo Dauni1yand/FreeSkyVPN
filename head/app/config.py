@@ -100,6 +100,11 @@ class Settings(BaseSettings):
 
     # --- Xray updates (app/services/xray_updates.py) ---
     # How often the head asks the release feed and every node what they run.
+    #: Как часто пробовать ноды, признанные недоступными. Изоляция снимается
+    #: успешным вызовом, а выбиралка изолированным нодам вызовов не шлёт —
+    #: без отдельного прохода они остаются вне ротации навсегда.
+    node_recovery_interval_seconds: int = 120
+
     xray_update_check_interval_hours: int = 12
     # A release lookup is cached this long; the answer changes at most daily
     # and GitHub rate-limits unauthenticated callers.

@@ -21,6 +21,7 @@ from app.api.routers import (
 from app.config import get_settings
 from app.services.scheduler import (
     access_expiry_loop,
+    node_recovery_loop,
     sni_maintenance_loop,
     tier_reconciliation_loop,
     xray_update_apply_loop,
@@ -51,6 +52,11 @@ async def lifespan(_app: FastAPI):
         # The one loop that actually ends sessions. Without it a single
         # watched ad buys an unlimited tunnel.
         tasks.append(asyncio.create_task(access_expiry_loop()))
+        # Без него нода, однажды признанная недоступной, остаётся вне ротации
+        # навсегда: снимает изоляцию только успешный вызов, а вызовы
+        # изолированным нодам никто не шлёт.
+        tasks.append(asyncio.create_task(node_recovery_loop()))
+        logger.info("node recovery loop started")
         logger.info("access expiry loop started")
         if settings.xray_update_check_enabled:
             tasks.append(asyncio.create_task(xray_update_check_loop()))

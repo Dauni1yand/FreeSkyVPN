@@ -201,7 +201,11 @@ def test_the_refusal_explains_why_capacity_was_withheld(db, pushes):
 
     with pytest.raises(NoCapacityError) as excinfo:
         assign_config(db, make_user(db))
-    assert "earned access" in str(excinfo.value)
+    reason = str(excinfo.value)
+    # Отказ должен называть и потолок, и то, для кого держится остаток:
+    # «нет места» без этого выглядит как авария, а не как правило.
+    assert "80%" in reason
+    assert "посмотрел рекламу" in reason
 
 
 def test_a_less_loaded_node_is_preferred(db, pushes):

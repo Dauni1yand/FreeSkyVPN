@@ -197,3 +197,57 @@ async def access_expiry_loop() -> None:
     while True:
         await asyncio.to_thread(run_access_expiry)
         await asyncio.sleep(interval)
+
+
+def run_node_recovery() -> None:
+    """Пробовать ноды, признанные недоступными, — иначе они такими и остаются.
+
+    `call_node` возвращает ноду в строй, как только та ответит: изоляция
+    задумывалась как временное состояние. Но выбиралка исключает
+    изолированные ноды из кандидатов, а значит обращаться к ним больше
+    некому — состояние, снимаемое только успешным вызовом, не получает ни
+    одного вызова.
+
+    До сих пор из этого выводила проверка обновлений Xray, которая ходит по
+    всем активным нодам раз в двенадцать часов. То есть выздоровевшая нода
+    возвращалась в работу в среднем через шесть часов, случайно и незаметно.
+    Здесь это делается намеренно и часто.
+    """
+    from app.db.models.node import Node, NodeChannelState, NodeStatus
+    from app.node_manager.channel import call_node
+    from app.services.certs import bundle_for
+
+    with SessionLocal() as db:
+        try:
+            nodes = db.scalars(
+                select(Node).where(
+                    Node.status == NodeStatus.active,
+                    Node.channel_state != NodeChannelState.active,
+                )
+            ).all()
+            for node in nodes:
+                was = node.channel_state
+                try:
+                    call_node(db, node, bundle_for(node), lambda client: client.status())
+                except Exception:
+                    # call_node уже записал неудачу и подвинул состояние;
+                    # здесь нас интересует только обратный переход.
+                    logger.debug("node %s still unreachable", node.id, exc_info=True)
+                if node.channel_state != was:
+                    logger.info(
+                        "node %s recovered: %s -> %s",
+                        node.id,
+                        was.value,
+                        node.channel_state.value,
+                    )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("node recovery pass failed")
+
+
+async def node_recovery_loop() -> None:
+    interval = get_settings().node_recovery_interval_seconds
+    while True:
+        await asyncio.to_thread(run_node_recovery)
+        await asyncio.sleep(interval)
