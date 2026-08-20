@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -157,7 +158,8 @@ def provision_node(
             result = ssh_manager.run(client, command, stdin_data=_bootstrap_source())
             if result.exit_status != 0:
                 raise ProvisioningError(
-                    f"bootstrap failed (exit {result.exit_status}): {result.stderr.strip()[-1500:]}"
+                    f"bootstrap failed (exit {result.exit_status}): "
+                    + _meaningful_tail(result.stderr)
                 )
             log.append("bootstrap completed")
 
@@ -191,6 +193,33 @@ CONTROL_PORT_RANGE = tuple(range(62050, 62100))
 #: То же для Reality-инбаунда канала управления. Обычные HTTPS-порты — он
 #: должен выглядеть как ещё один клиентский, а не как канал управления.
 CONTROL_REALITY_FALLBACKS = (8443, 2096, 2087, 2083, 2053, 443)
+
+
+
+#: Строка полосы прогресса curl: только числа, проценты, размеры и время.
+_PROGRESS_LINE = re.compile(r"^[\d\s.:%kKMGmhs+-]*$")
+
+
+def _meaningful_tail(output: str, lines: int = 12) -> str:
+    """Последние осмысленные строки вывода bootstrap.
+
+    Установщик Xray качает архив с полосой прогресса, и она пишет сотни
+    строк из одних цифр. Обрезание по символам оставляло от ошибки ровно
+    их: настоящее «unzip: command not found» уходило за границу, а на
+    экран попадали проценты и скорости.
+
+    Полоса выбрасывается целиком, потому что она никогда ничего не
+    объясняет; если после фильтра не осталось ничего, возвращается хвост
+    как есть — пустое сообщение хуже неудобного.
+    """
+    kept = [
+        line.rstrip()
+        for line in output.splitlines()
+        if line.strip() and not _PROGRESS_LINE.match(line.strip())
+    ]
+    if not kept:
+        return output.strip()[-600:]
+    return "\n".join(kept[-lines:])
 
 
 def _free_port(preferred: int, occupied: set[int], candidates) -> int:

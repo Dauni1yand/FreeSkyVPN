@@ -43,6 +43,35 @@ if [[ ! -f "$HEAD_CLIENT_CERT_PATH" ]]; then
     exit 1
 fi
 
+# Проверяется явно, а не подразумевается. Минимальный облачный образ
+# Ubuntu приезжает без unzip, а установщик Xray распаковывает им архив —
+# и падает строкой «unzip: command not found» после того, как двадцать
+# мегабайт уже скачаны, в середине полосы прогресса, где её не видно.
+log "checking prerequisites"
+MISSING_PACKAGES=()
+for tool in curl unzip openssl tc; do
+    command -v "$tool" &>/dev/null && continue
+    case "$tool" in
+        tc) MISSING_PACKAGES+=("iproute2") ;;   # им же настраивается приоритет трафика
+        *)  MISSING_PACKAGES+=("$tool") ;;
+    esac
+done
+
+if (( ${#MISSING_PACKAGES[@]} )); then
+    log "installing: ${MISSING_PACKAGES[*]}"
+    if ! command -v apt-get &>/dev/null; then
+        echo "нет apt-get, а не хватает: ${MISSING_PACKAGES[*]}" >&2
+        echo "Поставьте эти пакеты на ноде вручную и повторите." >&2
+        exit 1
+    fi
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    if ! apt-get install -y -qq "${MISSING_PACKAGES[@]}"; then
+        echo "не удалось установить: ${MISSING_PACKAGES[*]}" >&2
+        exit 1
+    fi
+fi
+
 log "installing docker (if missing)"
 if ! command -v docker &>/dev/null; then
     curl -fsSL https://get.docker.com | sh
