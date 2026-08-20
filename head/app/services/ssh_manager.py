@@ -24,6 +24,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import paramiko
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 from paramiko.ssh_exception import NoValidConnectionsError
 
 from app.db.models.node import Node
@@ -210,12 +212,34 @@ def run(client: paramiko.SSHClient, command: str, *, stdin_data: str | None = No
 
 
 def generate_keypair() -> tuple[str, str]:
-    """A fresh Ed25519 keypair: (private PEM, public authorized_keys line)."""
-    key = paramiko.Ed25519Key.generate()
-    buffer = io.StringIO()
-    key.write_private_key(buffer)
-    public_line = f"{key.get_name()} {key.get_base64()} freeskyvpn-head"
-    return buffer.getvalue(), public_line
+    """A fresh Ed25519 keypair: (private key in OpenSSH format, public line).
+
+    Generated through `cryptography` rather than paramiko. Paramiko offers
+    `generate()` on RSAKey and ECDSAKey but not on Ed25519Key, so the
+    symmetrical-looking call raises AttributeError — and it does so at the
+    one moment provisioning cannot retry, right after the head has decided
+    the node is reachable.
+
+    The private half is written in OpenSSH format because that is what
+    `connect` reads back with Ed25519Key.from_private_key; the public half
+    is an authorized_keys line, comment included, so the node shows who put
+    it there.
+    """
+    private = ed25519.Ed25519PrivateKey.generate()
+    private_openssh = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.OpenSSH,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public_openssh = (
+        private.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.OpenSSH,
+            format=serialization.PublicFormat.OpenSSH,
+        )
+        .decode()
+    )
+    return private_openssh, f"{public_openssh} freeskyvpn-head"
 
 
 def install_key(node: Node, *, password: str) -> str:
