@@ -16,11 +16,13 @@ break-glass path.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import logging
 import re
 import ssl
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,6 +71,7 @@ def _bootstrap_source() -> str:
 def provision_node(
     db: Session,
     *,
+    on_progress: Callable[[str], None] | None = None,
     host: str,
     country: str,
     ssh_user: str,
@@ -95,6 +98,23 @@ def provision_node(
 
     log: list[str] = []
 
+    def step(text: str) -> None:
+        """Записать шаг и, если есть кому, показать его сразу.
+
+        Одно и то же и в отчёт, и на экран: два независимых способа
+        рассказать о происходящем разошлись бы уже к третьему шагу.
+
+        Многострочное разбивается: check_connectivity возвращает описание
+        системы в несколько строк, и одним куском оно читается как сбой
+        вывода.
+        """
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            log.append(line)
+            if on_progress is not None:
+                on_progress(line)
+
     # Повторная попытка для того же адреса продолжает прежнюю запись, а не
     # заводит вторую. Провижининг рассчитан на перезапуск после неудачи —
     # так и написано в документации, — но каждая попытка создавала новую
@@ -104,9 +124,9 @@ def provision_node(
     if node is None:
         node = Node(host=host)
         db.add(node)
-        log.append("новая нода")
+        step("новая нода")
     else:
-        log.append(f"нода {host} уже была заведена, продолжаю её")
+        step(f"нода {host} уже была заведена, продолжаю её")
 
     node.country = country
     node.ssh_user = ssh_user
@@ -120,12 +140,12 @@ def provision_node(
     db.flush()
 
     try:
-        log.append(ssh_manager.check_connectivity(node, password=ssh_password))
-        log.append("SSH reachable")
+        step(ssh_manager.check_connectivity(node, password=ssh_password))
+        step("SSH reachable")
 
         node.ssh_private_key_enc = ssh_manager.install_key(node, password=ssh_password)
         db.flush()
-        log.append("head SSH key installed")
+        step("head SSH key installed")
 
         # From here on the key works, so the operator's password is no longer
         # needed and is not passed again.
@@ -139,14 +159,14 @@ def provision_node(
 
             clashing = sorted(occupied & set(tiers.all_ports()))
             if clashing:
-                log.append(
+                step(
                     "ports already in use on the node, they will not be handed out: "
                     + ", ".join(str(port) for port in clashing)
                 )
 
             control_port = _free_port(control_port, occupied, CONTROL_PORT_RANGE)
             if control_port != node.control_port:
-                log.append(f"control port {node.control_port} was taken, using {control_port}")
+                step(f"control port {node.control_port} was taken, using {control_port}")
                 node.control_port = control_port
                 db.flush()
 
@@ -159,7 +179,7 @@ def provision_node(
                 sftp.put(str(cert_path), REMOTE_CERT_PATH)
             finally:
                 sftp.close()
-            log.append("head client certificate uploaded")
+            step("head client certificate uploaded")
 
             # The tier port sets come from the head so the tc filters on the
             # node and the ports the head hands out cannot drift apart.
@@ -169,34 +189,49 @@ def provision_node(
                 f"{uplink_mbit} {args['paid_ports']} {args['free_ports']} "
                 f"{args['paid_range']} {args['free_range']}"
             )
-            result = ssh_manager.run(client, command, stdin_data=_bootstrap_source())
+            result = ssh_manager.run(
+                client,
+                command,
+                stdin_data=_bootstrap_source(),
+                # Строки bootstrap уходят на экран по мере появления:
+                # установка Docker и тяга образа занимают минуты.
+                on_line=(lambda line: on_progress(f"  {line}")) if on_progress else None,
+            )
             if result.exit_status != 0:
                 raise ProvisioningError(
                     f"bootstrap failed (exit {result.exit_status}): "
                     + _meaningful_tail(result.stderr)
                 )
-            log.append("bootstrap completed")
+            step("bootstrap completed")
 
         payload = _parse_bootstrap_output(result.stdout)
         _apply_bootstrap_payload(db, node, payload)
-        log.append(f"registered control-channel inbound on port {payload['control_inbound']['port']}")
-        log.append(f"traffic priority applied on a {uplink_mbit} Mbit/s link")
+        step(f"registered control-channel inbound on port {payload['control_inbound']['port']}")
+        step(f"traffic priority applied on a {uplink_mbit} Mbit/s link")
 
         node.ssh_password_enc = ssh_manager.rotate_password(node)
         node.ssh_password_rotated_at = datetime.now(UTC)
-        log.append("SSH password rotated; the password you entered is no longer valid")
+        step("SSH password rotated; the password you entered is no longer valid")
 
         node.status = NodeStatus.active
         db.flush()
         return ProvisionResult(node_id=str(node.id), log=log)
 
     except (SshError, ProvisioningError, KeyError, ValueError) as exc:
-        # The node row is kept in `draining` rather than deleted: it holds the
-        # key we may already have installed, and losing that would leave the
-        # node with our access and us without a record of it.
-        node.status = NodeStatus.draining
-        db.flush()
-        logger.exception("provisioning failed for %s", host)
+        # Запись сохраняется только если на ноде уже есть наш ключ: тогда
+        # выбросить её значило бы оставить ноду с нашим доступом, а нас —
+        # без записи о ней. Если до ключа не дошло, на ноде нашего нет
+        # ничего, и хранить о ней строку незачем — она осядет в списке нод
+        # мусором и будет считаться в «всего нод N».
+        if node.ssh_private_key_enc:
+            node.status = NodeStatus.draining
+            db.flush()
+            step("запись о ноде сохранена: на ней остался ключ головы")
+        else:
+            _forget_node(db, node)
+            step("на ноде ничего нашего не появилось, запись удалена")
+
+        logger.warning("provisioning failed for %s: %s", host, exc)
         raise ProvisioningError(f"{exc}\n\n" + "\n".join(log)) from exc
 
 
@@ -234,6 +269,21 @@ def _meaningful_tail(output: str, lines: int = 12) -> str:
     if not kept:
         return output.strip()[-600:]
     return "\n".join(kept[-lines:])
+
+
+def _forget_node(db: Session, node: Node) -> None:
+    """Убрать запись о ноде и всё, что за ней тянется.
+
+    Кэш её сертификата лежит файлом на диске головы и по удалению строки
+    сам не исчезает: имя файла — это id ноды, так что через десяток
+    неудачных попыток каталог заполняется пемами от нод, которых нет.
+    """
+    settings = get_settings()
+    cached = Path(settings.node_cert_cache_dir) / f"{node.id}.pem"
+    with contextlib.suppress(OSError):
+        cached.unlink(missing_ok=True)
+    db.delete(node)
+    db.flush()
 
 
 def _free_port(preferred: int, occupied: set[int], candidates) -> int:

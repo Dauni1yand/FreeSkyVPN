@@ -160,46 +160,6 @@ def test_a_healthy_node_says_nothing_alarming(on_node):
 # --- повторное добавление -------------------------------------------------
 
 
-def test_retrying_a_failed_node_continues_the_same_row(db, monkeypatch, tmp_path):
-    """Провижининг рассчитан на перезапуск после неудачи.
-
-    Но каждая попытка заводила новую строку: флот наполнялся
-    полупровизиненными дублями одного адреса, каждый со своим ключом, и все
-    они считались нодами — в том числе в сообщении «нет подходящей ноды».
-    """
-    from sqlalchemy import select
-
-    from app.db.models.node import Node
-    from app.services import crypto
-    from app.services import provisioning as prov
-
-    cert = tmp_path / "head_client_cert.pem"
-    cert.write_text("cert", encoding="utf-8")
-    monkeypatch.setattr(crypto, "is_configured", lambda: True)
-    monkeypatch.setattr(
-        prov, "get_settings", lambda: SimpleNamespace(head_client_cert_path=str(cert))
-    )
-    monkeypatch.setattr(
-        prov.ssh_manager,
-        "check_connectivity",
-        lambda *_a, **_kw: (_ for _ in ()).throw(prov.SshError("нода молчит")),
-    )
-
-    for _ in range(3):
-        with pytest.raises(prov.ProvisioningError):
-            prov.provision_node(
-                db,
-                host="203.0.113.77",
-                country="nl",
-                ssh_user="root",
-                ssh_password="x",
-            )
-        db.commit()
-
-    rows = db.scalars(select(Node).where(Node.host == "203.0.113.77")).all()
-    assert len(rows) == 1, f"после трёх попыток строк должно быть одна, а не {len(rows)}"
-
-
 # --- взгляд со стороны головы --------------------------------------------
 
 
@@ -466,3 +426,112 @@ def test_the_flag_surfaces_why_the_node_refuses_a_config(monkeypatch):
 def test_a_working_push_is_stated_plainly(monkeypatch):
     report = _push_scenario(monkeypatch, push=True, pushing=lambda *_a: None)
     assert "выдача конфига прошла" in report
+
+
+# --- запись о ноде ---------------------------------------------------------
+
+
+def _failing_provision(db, monkeypatch, tmp_path, *, install_key):
+    """Три неудачные попытки подключить одну и ту же ноду."""
+    from app.services import crypto
+    from app.services import provisioning as prov
+
+    cert = tmp_path / "head_client_cert.pem"
+    cert.write_text("cert", encoding="utf-8")
+    monkeypatch.setattr(crypto, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        prov,
+        "get_settings",
+        lambda: SimpleNamespace(
+            head_client_cert_path=str(cert), node_cert_cache_dir=str(tmp_path / "cache")
+        ),
+    )
+    monkeypatch.setattr(prov.ssh_manager, "check_connectivity", lambda *_a, **_kw: "ok")
+
+    if install_key:
+        monkeypatch.setattr(prov.ssh_manager, "install_key", lambda *_a, **_kw: "encrypted")
+    else:
+        monkeypatch.setattr(
+            prov.ssh_manager,
+            "install_key",
+            lambda *_a, **_kw: (_ for _ in ()).throw(prov.SshError("ключ не установился")),
+        )
+    monkeypatch.setattr(
+        prov.ssh_manager,
+        "connect",
+        lambda *_a, **_kw: (_ for _ in ()).throw(prov.SshError("дальше не пошло")),
+    )
+
+    for _ in range(3):
+        with pytest.raises(prov.ProvisioningError):
+            prov.provision_node(
+                db, host="203.0.113.77", country="nl", ssh_user="root", ssh_password="x"
+            )
+        db.commit()
+
+
+def test_a_failure_before_our_key_lands_leaves_no_row(db, monkeypatch, tmp_path):
+    """На ноде нашего нет ничего — значит и записи о ней быть не должно.
+
+    Иначе неудачные попытки оседают в списке нод мусором и считаются в
+    «всего нод N», в том числе в объяснении, почему подходящей ноды нет.
+    """
+    from sqlalchemy import select
+
+    from app.db.models.node import Node
+
+    _failing_provision(db, monkeypatch, tmp_path, install_key=False)
+
+    rows = db.scalars(select(Node).where(Node.host == "203.0.113.77")).all()
+    assert rows == []
+
+
+def test_a_failure_after_our_key_lands_keeps_exactly_one_row(db, monkeypatch, tmp_path):
+    """Ключ на ноде есть — забыть о ней значило бы отдать ей наш доступ
+    и не иметь записи об этом. Но и плодить строки при повторах нельзя."""
+    from sqlalchemy import select
+
+    from app.db.models.node import Node, NodeStatus
+
+    _failing_provision(db, monkeypatch, tmp_path, install_key=True)
+
+    rows = db.scalars(select(Node).where(Node.host == "203.0.113.77")).all()
+    assert len(rows) == 1, f"после трёх попыток строк должно быть одна, а не {len(rows)}"
+    assert rows[0].status == NodeStatus.draining
+
+
+def test_forgetting_a_node_removes_its_cached_certificate(db, tmp_path, monkeypatch):
+    """Имя файла — это id ноды, и по удалению строки он сам не исчезает."""
+    from app.services import provisioning as prov
+    from tests.factories import make_node
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(
+        prov, "get_settings", lambda: SimpleNamespace(node_cert_cache_dir=str(cache))
+    )
+
+    node = make_node(db)
+    db.commit()
+    cached = cache / f"{node.id}.pem"
+    cached.write_text("cert", encoding="utf-8")
+
+    prov._forget_node(db, node)
+    db.commit()
+
+    assert not cached.exists()
+
+
+def test_forgetting_a_node_without_a_cached_certificate_is_fine(db, tmp_path, monkeypatch):
+    """Обычный случай для ноды, до сертификата которой дело не дошло."""
+    from app.services import provisioning as prov
+    from tests.factories import make_node
+
+    monkeypatch.setattr(
+        prov, "get_settings", lambda: SimpleNamespace(node_cert_cache_dir=str(tmp_path))
+    )
+    node = make_node(db)
+    db.commit()
+
+    prov._forget_node(db, node)
+    db.commit()

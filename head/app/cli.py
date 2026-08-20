@@ -97,11 +97,16 @@ def add_node(argv: list[str]) -> int:
     parser.add_argument("--control-sni", default="www.microsoft.com")
     args = parser.parse_args(argv)
 
-    print(f"подключаю {args.host} — это 1–3 минуты", flush=True)
+    print(f"подключаю {args.host} — это 1–3 минуты\n", flush=True)
+
+    def show(line: str) -> None:
+        print(f"  {line}", flush=True)
+
     with SessionLocal() as db:
         try:
             result = provisioning.provision_node(
                 db,
+                on_progress=show,
                 host=args.host.strip(),
                 country=args.country.strip(),
                 ssh_user=args.ssh_user.strip(),
@@ -119,9 +124,7 @@ def add_node(argv: list[str]) -> int:
             return 1
         db.commit()
 
-    for line in result.log:
-        print(f"  · {line}")
-    print(f"\nнода {args.host} подключена")
+    print(f"\nнода {args.host} подключена ({len(result.log)} шагов)")
     print("Пароль на ноде сменён на случайный — введённый больше не действует.")
     return 0
 
@@ -431,7 +434,7 @@ def node_delete(argv: list[str]) -> int:
             if answer not in ("y", "yes"):
                 print("отменено")
                 return 1
-        db.delete(node)
+        provisioning._forget_node(db, node)
         db.commit()
     print(f"{host} удалена" + (f", осталось без связи {stranded} чел." if stranded else ""))
     return 0

@@ -47,6 +47,25 @@ fi
 # Ubuntu приезжает без unzip, а установщик Xray распаковывает им архив —
 # и падает строкой «unzip: command not found» после того, как двадцать
 # мегабайт уже скачаны, в середине полосы прогресса, где её не видно.
+# Сначала снести прежнее, потом ставить.
+#
+# Нода задумана одноразовой: всё ценное живёт на голове, а здесь только то,
+# что голова же и положила. Поэтому повторная установка не «дополняет»
+# прежнюю, а начинает с чистого листа — иначе остатки предыдущей попытки
+# (контейнер со старым сертификатом, чужой tc, скрипт запуска с другими
+# флагами) продолжают действовать и объясняют потом самые непонятные отказы.
+log "cleaning up anything left from a previous install"
+docker rm -f marzban-node >/dev/null 2>&1 || true
+rm -rf "$MARZBAN_NODE_DIR"
+rm -f /usr/local/sbin/freeskyvpn-start-node.sh
+rm -f "$HEAD_CLIENT_CERT_PATH.old"
+# tc снимается со всех внешних интерфейсов: имя могло смениться вместе с
+# образом, а прежняя дисциплина пережила бы переустановку и продолжила
+# резать трафик по портам, которых уже нет.
+for iface in $(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /^(lo|docker|veth|br-)/ {print $2}'); do
+    tc qdisc del dev "$iface" root >/dev/null 2>&1 || true
+done
+
 log "checking prerequisites"
 MISSING_PACKAGES=()
 for tool in curl unzip openssl tc; do

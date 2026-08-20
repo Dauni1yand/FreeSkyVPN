@@ -20,6 +20,8 @@ import logging
 import secrets
 import socket
 import string
+import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -201,14 +203,62 @@ def _parse_listening(output: str) -> set[int]:
     return ports
 
 
-def run(client: paramiko.SSHClient, command: str, *, stdin_data: str | None = None) -> CommandResult:
+def run(
+    client: paramiko.SSHClient,
+    command: str,
+    *,
+    stdin_data: str | None = None,
+    on_line: Callable[[str], None] | None = None,
+) -> CommandResult:
+    """Выполнить команду на ноде и вернуть её вывод целиком.
+
+    `on_line` получает строки stderr по мере их появления, а не в конце.
+    Bootstrap идёт минуты — ставит Docker, тянет образ, — и всё это время
+    единственным признаком жизни была надпись «это 1–3 минуты». Молчащая
+    установка неотличима от зависшей ровно до момента, когда становится
+    поздно.
+    """
     stdin, stdout, stderr = client.exec_command(command, timeout=300)
     if stdin_data is not None:
         stdin.write(stdin_data)
         stdin.channel.shutdown_write()
+
+    if on_line is None:
+        out = stdout.read().decode(errors="replace")
+        err = stderr.read().decode(errors="replace")
+        return CommandResult(exit_status=stdout.channel.recv_exit_status(), stdout=out, stderr=err)
+
+    err_chunks: list[str] = []
+    pending = ""
+    channel = stdout.channel
+    while True:
+        if channel.recv_stderr_ready():
+            chunk = channel.recv_stderr(4096).decode(errors="replace")
+            err_chunks.append(chunk)
+            pending += chunk
+            *lines, pending = pending.split("\n")
+            for line in lines:
+                if line.strip():
+                    on_line(line.rstrip())
+            continue
+        if channel.exit_status_ready() and not channel.recv_stderr_ready():
+            break
+        time.sleep(0.1)
+
+    # Дочитываем остаток: между последней проверкой и завершением команда
+    # успевает дописать ещё, и это обычно та самая строка с причиной.
+    while channel.recv_stderr_ready():
+        chunk = channel.recv_stderr(4096).decode(errors="replace")
+        err_chunks.append(chunk)
+        pending += chunk
+    for line in pending.split("\n"):
+        if line.strip():
+            on_line(line.rstrip())
+
     out = stdout.read().decode(errors="replace")
-    err = stderr.read().decode(errors="replace")
-    return CommandResult(exit_status=stdout.channel.recv_exit_status(), stdout=out, stderr=err)
+    return CommandResult(
+        exit_status=channel.recv_exit_status(), stdout=out, stderr="".join(err_chunks)
+    )
 
 
 def generate_keypair() -> tuple[str, str]:
