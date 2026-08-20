@@ -21,7 +21,6 @@ from app.services.ssh_manager import _parse_listening
 from app.services.tiers import Tier
 from tests.factories import make_inbound, make_node, seed_snis
 
-
 # --- чтение занятых портов -----------------------------------------------
 
 
