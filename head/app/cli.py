@@ -4,7 +4,12 @@
     python -m app.cli generate-key
     python -m app.cli add-node <host> <country> <ssh-password> [опции]
     python -m app.cli check-node <host> [--ssh-port N]
-    python -m app.cli list-nodes
+    python -m app.cli list-nodes [--json]
+    python -m app.cli status [--json]
+    python -m app.cli node-capacity <id> <N>
+    python -m app.cli node-status <id> <active|draining>
+    python -m app.cli node-delete <id>
+    python -m app.cli grant <user-id> [минут]
     python -m app.cli egress-url
 
 `create-admin` is the bootstrap: the panel has no sign-up, so the first
@@ -21,16 +26,22 @@ detour. Everything the form does, this does.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import secrets
 import socket
 import sys
 import time
+import uuid
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from app.db.models.node import Node
+from app.config import get_settings
+from app.db.models.node import Assignment, Inbound, Node, NodeStatus
+from app.db.models.user import User, UserStatus
 from app.db.session import SessionLocal
-from app.services import egress, provisioning
+from app.services import access, egress, provisioning
 from app.services.admin_auth import ensure_admin
 from app.services.config_selector import NoCapacityError, assign_config
 from app.services.ssh_manager import SshError
@@ -246,9 +257,16 @@ def check_node(argv: list[str]) -> int:
     return 1
 
 
-def list_nodes(_argv: list[str]) -> int:
+def list_nodes(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="list-nodes")
+    parser.add_argument("--json", action="store_true", help="машинно-читаемый вывод для меню")
+    args = parser.parse_args(argv)
+
     with SessionLocal() as db:
         nodes = db.scalars(select(Node).order_by(Node.country, Node.host)).all()
+        if args.json:
+            print(json.dumps([_node_row(db, n) for n in nodes], ensure_ascii=False))
+            return 0
         if not nodes:
             print("нод нет")
             return 0
@@ -259,6 +277,178 @@ def list_nodes(_argv: list[str]) -> int:
                 f"{node.status.value:<10} канал:{node.channel_state.value:<9} "
                 f"ёмкость:{node.capacity:<5} {node.uplink_mbit or '?'} Мбит"
             )
+    return 0
+
+
+
+def _live_users(db, node: Node) -> int:
+    """People currently placed on this node."""
+    return db.scalar(
+        select(func.count())
+        .select_from(Assignment)
+        .join(Inbound, Inbound.id == Assignment.inbound_id)
+        .where(Inbound.node_id == node.id, Assignment.released_at.is_(None))
+    ) or 0
+
+
+def _node_row(db, node: Node) -> dict:
+    return {
+        "id": str(node.id),
+        "host": node.host,
+        "country": node.country,
+        "status": node.status.value,
+        "channel": node.channel_state.value,
+        "capacity": node.capacity,
+        "uplink_mbit": node.uplink_mbit,
+        "users": _live_users(db, node),
+    }
+
+
+def _find_node(db, wanted: str) -> Node | None:
+    """Resolve a node by id or by host, so a menu and a human agree.
+
+    The menu passes ids; a person typing the command reaches for the
+    address they already know. Accepting both costs one query.
+    """
+    node = None
+    with contextlib.suppress(ValueError):
+        node = db.get(Node, uuid.UUID(wanted))
+    if node is None:
+        node = db.scalar(select(Node).where(Node.host == wanted))
+    return node
+
+
+def status(argv: list[str]) -> int:
+    """One screen answering "is anything wrong right now"."""
+    parser = argparse.ArgumentParser(prog="status")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    with SessionLocal() as db:
+        nodes = db.scalars(select(Node)).all()
+        now = datetime.now(UTC)
+        data = {
+            "nodes_total": len(nodes),
+            "nodes_active": sum(1 for n in nodes if n.status == NodeStatus.active),
+            "nodes_isolated": sum(1 for n in nodes if n.channel_state.value == "isolated"),
+            "capacity": sum(n.capacity for n in nodes if n.status == NodeStatus.active),
+            "users_total": db.scalar(select(func.count()).select_from(User)) or 0,
+            "users_banned": db.scalar(
+                select(func.count()).select_from(User).where(User.status == UserStatus.banned)
+            ) or 0,
+            "users_online": db.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(User.access_expires_at.isnot(None), User.access_expires_at > now)
+            ) or 0,
+            "assignments_live": db.scalar(
+                select(func.count())
+                .select_from(Assignment)
+                .where(Assignment.released_at.is_(None))
+            ) or 0,
+        }
+
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False))
+        return 0
+
+    print(f"Ноды        {data['nodes_active']} в работе из {data['nodes_total']}"
+          + (f", изолировано {data['nodes_isolated']}" if data["nodes_isolated"] else ""))
+    print(f"Ёмкость     {data['capacity']} мест, занято {data['assignments_live']}")
+    print(f"Пользователи {data['users_total']}, со временем сейчас {data['users_online']}"
+          + (f", заблокировано {data['users_banned']}" if data["users_banned"] else ""))
+    return 0
+
+
+def node_capacity(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="node-capacity")
+    parser.add_argument("node")
+    parser.add_argument("capacity", type=int)
+    args = parser.parse_args(argv)
+
+    with SessionLocal() as db:
+        node = _find_node(db, args.node)
+        if node is None:
+            print("нода не найдена", file=sys.stderr)
+            return 1
+        previous = node.capacity
+        node.capacity = max(1, args.capacity)
+        db.commit()
+        ratio = get_settings().free_admission_ratio
+        print(f"ёмкость {node.host}: {previous} → {node.capacity}")
+        print(
+            f"Запасной доступ перестанет приниматься на {int(node.capacity * ratio)}, "
+            "остальное держится для тех, кто посмотрел рекламу."
+        )
+    return 0
+
+
+def node_status(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="node-status")
+    parser.add_argument("node")
+    parser.add_argument("state", choices=[s.value for s in NodeStatus])
+    args = parser.parse_args(argv)
+
+    with SessionLocal() as db:
+        node = _find_node(db, args.node)
+        if node is None:
+            print("нода не найдена", file=sys.stderr)
+            return 1
+        node.status = NodeStatus(args.state)
+        db.commit()
+        if node.status == NodeStatus.draining:
+            print(f"{node.host} выведена из ротации: новых не получит, текущие продолжают работать")
+        else:
+            print(f"{node.host} снова в ротации")
+    return 0
+
+
+def node_delete(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="node-delete")
+    parser.add_argument("node")
+    parser.add_argument("--yes", action="store_true", help="не спрашивать подтверждения")
+    args = parser.parse_args(argv)
+
+    with SessionLocal() as db:
+        node = _find_node(db, args.node)
+        if node is None:
+            print("нода не найдена", file=sys.stderr)
+            return 1
+        stranded = _live_users(db, node)
+        host = node.host
+        if not args.yes:
+            # Спрашиваем именно про людей, а не про запись в таблице: удаление
+            # ноды с живыми пользователями оставит их без связи до следующего
+            # нажатия «подключиться», и это стоит знать заранее.
+            warning = f" Сейчас на ней {stranded} чел." if stranded else ""
+            answer = input(f"Удалить {host}?{warning} [y/N]: ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("отменено")
+                return 1
+        db.delete(node)
+        db.commit()
+    print(f"{host} удалена" + (f", осталось без связи {stranded} чел." if stranded else ""))
+    return 0
+
+
+def grant(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="grant")
+    parser.add_argument("user_id")
+    parser.add_argument("minutes", type=int, nargs="?", default=60)
+    args = parser.parse_args(argv)
+
+    with SessionLocal() as db:
+        try:
+            user = db.get(User, uuid.UUID(args.user_id))
+        except ValueError:
+            print("это не похоже на user_id", file=sys.stderr)
+            return 1
+        if user is None:
+            print("пользователь не найден", file=sys.stderr)
+            return 1
+        state = access.grant_manual(db, user, args.minutes, by="cli")
+        db.commit()
+        print(f"выдано {args.minutes} мин; всего осталось {state.seconds_remaining // 60} мин")
     return 0
 
 
@@ -290,6 +480,11 @@ COMMANDS = {
     "add-node": add_node,
     "check-node": check_node,
     "list-nodes": list_nodes,
+    "status": status,
+    "node-capacity": node_capacity,
+    "node-status": node_status,
+    "node-delete": node_delete,
+    "grant": grant,
     "egress-url": egress_url,
 }
 

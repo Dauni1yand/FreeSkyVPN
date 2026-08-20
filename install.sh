@@ -454,9 +454,31 @@ if [[ -z ${ADMIN_DOMAIN:-} ]]; then
 TUNNEL
 fi
 
+# ------------------------------------------------------------ команда ---
+
+# Одна короткая команда вместо длинных docker compose exec: сервер и так
+# настраивают по ssh, а панель слушает loopback, и добираться до неё нужно
+# через туннель с браузером.
+if cat > /usr/local/bin/freeskyvpn <<WRAPPER
+#!/bin/sh
+exec python3 "$REPO_DIR/menu.py" "\$@"
+WRAPPER
+then
+    chmod +x /usr/local/bin/freeskyvpn
+    ok "команда freeskyvpn установлена"
+else
+    warn "не удалось создать /usr/local/bin/freeskyvpn"
+    info "Меню всё равно доступно: python3 $REPO_DIR/menu.py"
+fi
+
 cat <<NEXT
 
   ${BOLD}Дальше${OFF}
+
+  0. Вся настройка — одной командой:
+         ${BOLD}freeskyvpn${OFF}
+     Ноды, доступ, Telegram, логи, обновление, проверка — меню с цифрами.
+     Всё то же есть и отдельными командами, если удобнее так:
   1. Добавьте ноду — из консоли, браузер не нужен:
          docker compose exec head python -m app.cli add-node <ip> <страна> '<пароль>'
      Список подключённых: ... python -m app.cli list-nodes
