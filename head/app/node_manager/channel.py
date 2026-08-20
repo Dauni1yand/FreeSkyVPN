@@ -193,7 +193,12 @@ def call_node(db: Session, node: Node, certs: NodeCertBundle, action: Callable[[
     if node.channel_state == NodeChannelState.degraded:
         order = ["tunnel", "direct"]
 
-    last_error: Exception | None = None
+    # Ошибки собираются по путям, а не перезаписываются. Прямой путь и
+    # туннель отказывают по разным причинам, и полезная почти всегда у
+    # первого: «503: Failed to start core» с ноды объясняет всё, а
+    # «Connection refused» от неподнявшегося локального SOCKS — ничего.
+    # Прежний код оставлял последнюю, то есть ровно бесполезную.
+    errors: dict[str, Exception] = {}
     for path in order:
         client = _direct_client(node, certs) if path == "direct" else _tunnelled_client(node, certs)
         if client is None:
@@ -215,15 +220,20 @@ def call_node(db: Session, node: Node, certs: NodeCertBundle, action: Callable[[
             return result
 
         except Exception as exc:  # noqa: BLE001 - any failure here should trigger fallback, not just network ones
-            last_error = exc
+            errors[path] = exc
             if path == "direct":
                 node.consecutive_primary_fails += 1
             else:
                 node.consecutive_fallback_fails += 1
 
+    detail = "; ".join(
+        f"{'напрямую' if path == 'direct' else 'через туннель'}: {exc}"
+        for path, exc in errors.items()
+    ) or "путей не осталось"
+
     if node.consecutive_fallback_fails >= settings.node_channel_fallback_fails_before_isolated:
-        _record_transition(db, node, NodeChannelState.isolated, str(last_error))
+        _record_transition(db, node, NodeChannelState.isolated, detail)
     elif node.consecutive_primary_fails >= settings.node_channel_primary_fails_before_fallback:
-        _record_transition(db, node, NodeChannelState.degraded, str(last_error))
+        _record_transition(db, node, NodeChannelState.degraded, detail)
     db.flush()
-    raise NodeUnreachableError(f"node {node.id} unreachable via direct or tunnel: {last_error}")
+    raise NodeUnreachableError(f"node {node.id} unreachable via direct or tunnel — {detail}")
