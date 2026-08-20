@@ -291,3 +291,121 @@ def test_the_diagnosis_reports_a_recovery_it_caused(monkeypatch):
 
     report = "\n".join(provisioning.diagnose_node(None, node))
     assert "isolated → active" in report
+
+
+# --- сертификат головы на ноде -------------------------------------------
+
+
+def _cert_scenario(monkeypatch, tmp_path, *, remote_fingerprint, local_pem=None):
+    """Диагностика при заданном сертификате на ноде и на голове."""
+    from app.services import provisioning as prov
+
+    local = tmp_path / "head_client_cert.pem"
+    local.write_text(local_pem or _SELF_SIGNED, encoding="utf-8")
+    monkeypatch.setattr(
+        prov, "get_settings", lambda: SimpleNamespace(head_client_cert_path=str(local))
+    )
+
+    def run(_client, command, **_kwargs):
+        if "State.Status" in command:
+            return CommandResult(stdout="running", stderr="", exit_status=0)
+        if "ls -1" in command:
+            return CommandResult(stdout=ALL_CERTS, stderr="", exit_status=0)
+        if "fingerprint" in command:
+            return CommandResult(
+                stdout=f"sha256 Fingerprint={remote_fingerprint}", stderr="", exit_status=0
+            )
+        return CommandResult(stdout="", stderr="", exit_status=0)
+
+    connect = MagicMock()
+    connect.return_value.__enter__ = lambda _self: MagicMock()
+    connect.return_value.__exit__ = lambda *_a: False
+    monkeypatch.setattr(prov.ssh_manager, "connect", connect)
+    monkeypatch.setattr(prov.ssh_manager, "run", run)
+    monkeypatch.setattr(prov.ssh_manager, "listening_ports", lambda _c: {62050})
+    monkeypatch.setattr("app.services.certs.bundle_for", lambda _n: None)
+    monkeypatch.setattr("app.node_manager.channel.call_node", lambda *_a, **_kw: None)
+    return "\n".join(prov.diagnose_node(None, NODE))
+
+
+def _fingerprint_of(pem: str) -> str:
+    import hashlib
+    import ssl as ssl_module
+
+    digest = hashlib.sha256(ssl_module.PEM_cert_to_DER_cert(pem)).hexdigest().upper()
+    return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+
+
+def test_a_matching_head_certificate_is_not_mentioned(monkeypatch, tmp_path):
+    """Совпадение — это норма, о норме диагностика молчит."""
+    report = _cert_scenario(
+        monkeypatch, tmp_path, remote_fingerprint=_fingerprint_of(_SELF_SIGNED)
+    )
+    assert "ДРУГОЙ клиентский сертификат" not in report
+
+
+def test_a_stale_head_certificate_on_the_node_is_called_out(monkeypatch, tmp_path):
+    """Пересоздали secrets/ — и все прежние ноды перестают узнавать голову.
+
+    Со стороны головы это выглядит обрывом соединения без объяснений, и
+    догадаться про сертификат неоткуда.
+    """
+    report = _cert_scenario(
+        monkeypatch,
+        tmp_path,
+        remote_fingerprint="AA:BB:CC:DD" + ":00" * 28,
+    )
+    assert "ДРУГОЙ клиентский сертификат" in report
+    assert "add-node" in report, "нужно сказать, чем лечится"
+
+
+def test_the_node_log_is_read_after_the_attempt(monkeypatch, tmp_path):
+    """Наш конец видит только обрыв; почему нода его закрыла — знает нода.
+
+    Лог, прочитанный до попытки, этой попытки не содержит.
+    """
+    from app.services import provisioning as prov
+
+    order: list[str] = []
+
+    def run(_client, command, **_kwargs):
+        if "docker logs" in command:
+            order.append("logs")
+            return CommandResult(stdout="ssl error from client", stderr="", exit_status=0)
+        if "State.Status" in command:
+            return CommandResult(stdout="running", stderr="", exit_status=0)
+        if "ls -1" in command:
+            return CommandResult(stdout=ALL_CERTS, stderr="", exit_status=0)
+        return CommandResult(stdout="", stderr="", exit_status=0)
+
+    def failing_call(*_args, **_kwargs):
+        order.append("call")
+        raise ConnectionResetError("[Errno 104] Connection reset by peer")
+
+    connect = MagicMock()
+    connect.return_value.__enter__ = lambda _self: MagicMock()
+    connect.return_value.__exit__ = lambda *_a: False
+    monkeypatch.setattr(prov.ssh_manager, "connect", connect)
+    monkeypatch.setattr(prov.ssh_manager, "run", run)
+    monkeypatch.setattr(prov.ssh_manager, "listening_ports", lambda _c: {62050})
+    monkeypatch.setattr("app.services.certs.bundle_for", lambda _n: None)
+    monkeypatch.setattr("app.node_manager.channel.call_node", failing_call)
+
+    report = "\n".join(prov.diagnose_node(None, NODE))
+
+    assert order.index("call") < order.index("logs"), "лог должен читаться после попытки"
+    assert "лог ноды после этой попытки" in report
+    assert "ssl error from client" in report
+
+
+_SELF_SIGNED = """-----BEGIN CERTIFICATE-----
+MIIBhTCCASugAwIBAgIUP0Q1qKzq9wMBCTMYqR8YrKzZ3AkwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJdGVzdC1jZXJ0MB4XDTI0MDEwMTAwMDAwMFoXDTM0MDEwMTAw
+MDAwMFowFDESMBAGA1UEAwwJdGVzdC1jZXJ0MFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAEa8mBl0pDwbmXwCQmOQMVLmwuNL9CzXHkzTQmtdCTnJdSKQmB1cVN0Vqd
+0YQKQmJ0V0nGDkfMxLJcBLQmVLQmB6NTMFEwHQYDVR0OBBYEFPQmVLQmB6nJdSKQ
+mB1cVN0VqdMB8GA1UdIwQYMBaAFPQmVLQmB6nJdSKQmB1cVN0VqdMA8GA1UdEwEB
+/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIhAPQmVLQmB6nJdSKQmB1cVN0VqdQm
+VLQmB6nJdSKQmB1cAiA0VqdQmVLQmB6nJdSKQmB1cVN0VqdQmVLQmB6nJdSKQmA==
+-----END CERTIFICATE-----
+"""

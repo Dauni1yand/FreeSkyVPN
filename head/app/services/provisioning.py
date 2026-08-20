@@ -16,9 +16,11 @@ break-glass path.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
+import ssl
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -321,29 +323,72 @@ def diagnose_node(db: Session, node: Node) -> list[str]:
         missing = {"ssl_cert.pem", "ssl_key.pem", "ssl_client_cert.pem"} - present
         if missing:
             report.append("не хватает файлов сертификатов: " + ", ".join(sorted(missing)))
+        elif (mismatch := _head_cert_mismatch(client)) is not None:
+            report.append(mismatch)
 
-        logs = ssh_manager.run(client, "docker logs --tail 20 marzban-node 2>&1")
+        report.append("")
+        report.append(f"канал управления сейчас: {node.channel_state.value}")
+        was = node.channel_state
+        failed = None
+        try:
+            from app.node_manager.channel import call_node
+            from app.services.certs import bundle_for
+
+            call_node(db, node, bundle_for(node), lambda rest: rest.status())
+        except Exception as exc:  # noqa: BLE001 - показываем любую причину как есть
+            failed = exc
+            report.append(f"голова НЕ достучалась: {type(exc).__name__}: {exc}")
+        else:
+            report.append("голова достучалась — нода отвечает")
+        if node.channel_state != was:
+            report.append(f"состояние канала: {was.value} → {node.channel_state.value}")
+
+        # Лог читается ПОСЛЕ попытки, а не до. Наш конец видит только обрыв —
+        # почему нода его закрыла, знает она сама, и записывает это в тот же
+        # момент. Прежний порядок показывал лог, в котором нашей попытки ещё
+        # не было.
+        logs = ssh_manager.run(client, "docker logs --tail 30 marzban-node 2>&1")
         tail = [line for line in logs.stdout.splitlines() if line.strip()]
         if tail:
-            report.append("последнее из лога контейнера:")
-            report.extend(f"    {line}" for line in tail[-12:])
-
-    report.append("")
-    report.append(f"канал управления сейчас: {node.channel_state.value}")
-    was = node.channel_state
-    try:
-        from app.node_manager.channel import call_node
-        from app.services.certs import bundle_for
-
-        call_node(db, node, bundle_for(node), lambda client: client.status())
-    except Exception as exc:  # noqa: BLE001 - показываем любую причину как есть
-        report.append(f"голова НЕ достучалась: {type(exc).__name__}: {exc}")
-    else:
-        report.append("голова достучалась — нода отвечает")
-    if node.channel_state != was:
-        report.append(f"состояние канала: {was.value} → {node.channel_state.value}")
+            report.append("")
+            report.append(
+                "лог ноды после этой попытки:" if failed else "последнее из лога ноды:"
+            )
+            report.extend(f"    {line}" for line in tail[-14:])
 
     return report
+
+
+def _head_cert_mismatch(client) -> str | None:
+    """Тот ли клиентский сертификат головы лежит на ноде.
+
+    Нода принимает управляющие вызовы только от предъявившего этот
+    сертификат. Разойтись они могут незаметно: пересоздали `secrets/` на
+    голове — и все ранее подключённые ноды перестают её узнавать, а
+    выглядит это как обрыв соединения без объяснений.
+    """
+    remote = ssh_manager.run(
+        client,
+        f"openssl x509 -in {MARZBAN_NODE_DIR}/ssl_client_cert.pem -noout -fingerprint -sha256",
+    )
+    if remote.exit_status != 0:
+        return None  # нет openssl или файл не читается — не наше дело здесь
+
+    local_path = Path(get_settings().head_client_cert_path)
+    if not local_path.is_file():
+        return f"сертификата головы нет на месте: {local_path}"
+
+    digest = hashlib.sha256(
+        ssl.PEM_cert_to_DER_cert(local_path.read_text())
+    ).hexdigest().upper()
+    theirs = remote.stdout.strip().split("=")[-1].replace(":", "").upper()
+    if digest == theirs:
+        return None
+    return (
+        "на ноде лежит ДРУГОЙ клиентский сертификат головы — она не признает "
+        "эту голову своей. Так бывает, если secrets/ пересоздавали после "
+        "подключения ноды; лечится повторным add-node для неё."
+    )
 
 
 def rescan_ports(db: Session, node: Node) -> tuple[list[int], list[int]]:
