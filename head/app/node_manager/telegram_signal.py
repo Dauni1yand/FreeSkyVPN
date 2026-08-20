@@ -39,5 +39,13 @@ def notify_admin(text: str) -> None:
     try:
         with httpx.Client(proxy=settings.telegram_proxy_url or None, timeout=5.0) as client:
             client.post(url, json={"chat_id": settings.telegram_admin_chat_id, "text": text})
-    except httpx.HTTPError:
-        logger.exception("Failed to deliver admin alert via Telegram")
+    except httpx.HTTPError as exc:
+        # Одной строкой, а не трейсбеком. Доставка алерта — лучшее усилие, и
+        # в этой сборке она предсказуемо не удаётся: путь к Telegram идёт
+        # через ноду, а алерты как раз про недоступные ноды. Полный
+        # трейсбек на каждую такую попытку — двадцать строк поверх той
+        # ошибки, ради которой человек и смотрит в лог.
+        route = settings.telegram_proxy_url or "напрямую"
+        logger.warning(
+            "алерт не доставлен (%s): %s: %s", route, type(exc).__name__, exc
+        )

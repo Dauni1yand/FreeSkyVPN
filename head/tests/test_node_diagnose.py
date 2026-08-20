@@ -409,3 +409,60 @@ mB1cVN0VqdMB8GA1UdIwQYMBaAFPQmVLQmB6nJdSKQmB1cVN0VqdMA8GA1UdEwEB
 VLQmB6nJdSKQmB1cAiA0VqdQmVLQmB6nJdSKQmB1cVN0VqdQmVLQmB6nJdSKQmA==
 -----END CERTIFICATE-----
 """
+
+
+# --- настоящая выдача конфига ---------------------------------------------
+
+
+def _push_scenario(monkeypatch, *, push, pushing):
+    """Диагностика с успешным status() и заданным поведением push_config."""
+    from app.services import provisioning as prov
+
+    def run(_client, command, **_kwargs):
+        if "State.Status" in command:
+            return CommandResult(stdout="running", stderr="", exit_status=0)
+        if "ls -1" in command:
+            return CommandResult(stdout=ALL_CERTS, stderr="", exit_status=0)
+        if "fingerprint" in command:
+            return CommandResult(stdout="", stderr="", exit_status=1)
+        return CommandResult(stdout="", stderr="", exit_status=0)
+
+    connect = MagicMock()
+    connect.return_value.__enter__ = lambda _self: MagicMock()
+    connect.return_value.__exit__ = lambda *_a: False
+    monkeypatch.setattr(prov.ssh_manager, "connect", connect)
+    monkeypatch.setattr(prov.ssh_manager, "run", run)
+    monkeypatch.setattr(prov.ssh_manager, "listening_ports", lambda _c: {62050})
+    monkeypatch.setattr("app.services.certs.bundle_for", lambda _n: None)
+    monkeypatch.setattr("app.node_manager.channel.call_node", lambda *_a, **_kw: None)
+    monkeypatch.setattr("app.services.node_sync.push_node_config", pushing)
+    return "\n".join(prov.diagnose_node(None, NODE, push=push))
+
+
+def test_without_the_flag_the_report_admits_what_it_did_not_check(monkeypatch):
+    """Опрос состояния проходит и там, где выдача конфига не проходит.
+
+    Так и выглядела поломка: канал «active», а пользователи без конфигов.
+    Отчёт не должен выглядеть зелёным, проверив самый дешёвый вызов.
+    """
+    called = []
+    report = _push_scenario(
+        monkeypatch, push=False, pushing=lambda *_a: called.append("push")
+    )
+    assert not called, "без флага ничего перезапускать нельзя"
+    assert "--push" in report
+    assert "только опрос состояния" in report
+
+
+def test_the_flag_surfaces_why_the_node_refuses_a_config(monkeypatch):
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("POST /start → 503: Failed to start core: bad port")
+
+    report = _push_scenario(monkeypatch, push=True, pushing=refuse)
+    assert "выдача конфига НЕ прошла" in report
+    assert "Failed to start core" in report
+
+
+def test_a_working_push_is_stated_plainly(monkeypatch):
+    report = _push_scenario(monkeypatch, push=True, pushing=lambda *_a: None)
+    assert "выдача конфига прошла" in report

@@ -285,7 +285,7 @@ def _apply_bootstrap_payload(db: Session, node: Node, payload: dict) -> None:
     db.flush()
 
 
-def diagnose_node(db: Session, node: Node) -> list[str]:
+def diagnose_node(db: Session, node: Node, *, push: bool = False) -> list[str]:
     """Посмотреть на ноду глазами головы и сказать, что с ней не так.
 
     Управляющий канал отвечает «Connection refused» — это значит, что пакет
@@ -340,6 +340,16 @@ def diagnose_node(db: Session, node: Node) -> list[str]:
             report.append(f"голова НЕ достучалась: {type(exc).__name__}: {exc}")
         else:
             report.append("голова достучалась — нода отвечает")
+            if push:
+                failed = _try_push(db, node, report)
+            else:
+                # Опрос состояния — самый дешёвый вызов, и он проходит даже
+                # там, где настоящая работа не проходит. Проверка, которая
+                # зелёная при неработающей системе, — хуже отсутствующей.
+                report.append(
+                    "это только опрос состояния; выдача конфига проверяется "
+                    "флагом --push (перезапустит Xray на ноде)"
+                )
         if node.channel_state != was:
             report.append(f"состояние канала: {was.value} → {node.channel_state.value}")
 
@@ -357,6 +367,27 @@ def diagnose_node(db: Session, node: Node) -> list[str]:
             report.extend(f"    {line}" for line in tail[-14:])
 
     return report
+
+
+def _try_push(db: Session, node: Node, report: list[str]) -> Exception | None:
+    """Отправить ноде настоящий конфиг — то, на чём всё и ломается.
+
+    `status()` отвечает и на ноде, которая не может поднять Xray: это
+    разные вызовы, и первый проходит, когда второй нет. Ровно так выглядела
+    поломка — канал «active», а пользователи без конфигов.
+
+    Перезапускает Xray на ноде, поэтому только по явному флагу: живые
+    подключения при этом рвутся.
+    """
+    from app.services.node_sync import push_node_config
+
+    try:
+        push_node_config(db, node)
+    except Exception as exc:  # noqa: BLE001 - причина нужна как есть
+        report.append(f"выдача конфига НЕ прошла: {type(exc).__name__}: {exc}")
+        return exc
+    report.append("выдача конфига прошла — нода приняла конфиг и подняла Xray")
+    return None
 
 
 def _head_cert_mismatch(client) -> str | None:
