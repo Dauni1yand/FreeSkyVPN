@@ -110,58 +110,139 @@ def add_node(argv: list[str]) -> int:
     return 0
 
 
+#: Порты, на которые хостеры чаще всего переносят ssh с 22-го.
+ALTERNATE_SSH_PORTS = (2222, 22222, 2200, 2022, 222)
+
+
+def _probe(host: str, port: int, timeout: float) -> tuple[str, str]:
+    """One TCP connection. Returns (исход, подробность)."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            # sshd представляется первым. Баннер отличает «порт открыт» от
+            # «порт открыт, но за ним не ssh» — второе встречается, когда
+            # хостер вешает на 22 свою заглушку.
+            banner = sock.recv(128).decode(errors="replace").strip()
+        return ("ssh" if banner.startswith("SSH-") else "open", banner)
+    except TimeoutError:
+        return ("filtered", "")
+    except ConnectionRefusedError:
+        return ("refused", "")
+    except OSError as exc:
+        return ("error", str(exc))
+
+
+def _head_public_ip() -> str | None:
+    """The address a node's firewall would need to allow.
+
+    Not the same as the server's own idea of its address behind NAT, which
+    is what people paste into a whitelist when the rule then does nothing.
+    """
+    import httpx
+
+    for service in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                text = client.get(service).text.strip()
+            if text and len(text) <= 45:
+                return text
+        except httpx.HTTPError:
+            continue
+    return None
+
+
 def check_node(argv: list[str]) -> int:
     """Can the head open a TCP connection to a node's SSH port?
 
     Run before add-node, or after it fails. Provisioning cannot start until
-    this works, and the answer separates the two situations that look
-    identical from inside a failed install: nothing came back at all, or
-    something came back and said no.
+    this works, and the answer separates the situations that look identical
+    from inside a failed install: nothing came back at all, something came
+    back and said no, or something answered that was not ssh.
+
+    On a silent failure it keeps going rather than stopping at "no": it
+    tries the ports hosters commonly move ssh to, and prints the address a
+    firewall would have to allow. Both are the next question anyway, and
+    asking them here saves a round trip through a support ticket.
     """
     parser = argparse.ArgumentParser(prog="check-node", description=check_node.__doc__)
     parser.add_argument("host")
     parser.add_argument("--ssh-port", type=int, default=22)
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--no-scan",
+        action="store_true",
+        help="не искать ssh на других портах, если основной молчит",
+    )
     args = parser.parse_args(argv)
 
     print(f"стучусь в {args.host}:{args.ssh_port} с головы…", flush=True)
     started = time.monotonic()
-    try:
-        with socket.create_connection((args.host, args.ssh_port), timeout=args.timeout) as sock:
-            sock.settimeout(args.timeout)
-            # sshd представляется первым. Баннер отличает «порт открыт» от
-            # «порт открыт, но за ним не ssh» — второе встречается, когда
-            # хостер вешает на 22 свою заглушку.
-            banner = sock.recv(128).decode(errors="replace").strip()
-    except TimeoutError:
-        print(
-            f"\nне отвечает за {args.timeout:g} с — пакеты отбрасываются молча.\n"
-            "До sshd дело не дошло, пароль ни при чём. Проверьте:\n"
-            "  1. фаервол хостера ноды — в панели, а не на самой ноде;\n"
-            "  2. тот ли порт: некоторые хостеры выдают ssh не на 22 (--ssh-port);\n"
-            "  3. жив ли сервер вообще — и не закрыт ли исходящий 22 у головы:\n"
-            "     docker compose exec head python -m app.cli check-node github.com",
-            file=sys.stderr,
-        )
-        return 1
-    except ConnectionRefusedError:
-        print(
-            f"\nсоединение отклонено — хост жив, но на {args.ssh_port} никто не слушает.\n"
-            "Либо sshd на другом порту (--ssh-port), либо он не запущен.",
-            file=sys.stderr,
-        )
-        return 1
-    except OSError as exc:
-        print(f"\nне достучаться: {exc}", file=sys.stderr)
-        return 1
-
+    outcome, detail = _probe(args.host, args.ssh_port, args.timeout)
     elapsed = (time.monotonic() - started) * 1000
-    print(f"порт открыт, {elapsed:.0f} мс")
-    if banner.startswith("SSH-"):
-        print(f"за ним ssh: {banner}")
+
+    if outcome == "ssh":
+        print(f"порт открыт, {elapsed:.0f} мс")
+        print(f"за ним ssh: {detail}")
         print("\nСеть в порядке — можно запускать add-node.")
         return 0
-    print(f"но приветствие не похоже на ssh: {banner[:60]!r}", file=sys.stderr)
+
+    if outcome == "open":
+        print(f"порт открыт, {elapsed:.0f} мс")
+        print(f"но приветствие не похоже на ssh: {detail[:60]!r}", file=sys.stderr)
+        print("Обычно это заглушка хостера. Настоящий ssh ищите на другом порту.", file=sys.stderr)
+        return 1
+
+    if outcome == "refused":
+        print(
+            f"\nсоединение отклонено — хост жив, но на {args.ssh_port} никто не слушает.\n"
+            "Либо sshd на другом порту, либо он не запущен.",
+            file=sys.stderr,
+        )
+    elif outcome == "filtered":
+        print(
+            f"\nне отвечает за {args.timeout:g} с — пакеты отбрасываются молча.\n"
+            "До sshd дело не дошло, пароль ни при чём.",
+            file=sys.stderr,
+        )
+    else:
+        print(f"\nне достучаться: {detail}", file=sys.stderr)
+        return 1
+
+    if not args.no_scan:
+        print("\nищу ssh на других портах…", file=sys.stderr)
+        found = []
+        for port in ALTERNATE_SSH_PORTS:
+            state, banner = _probe(args.host, port, timeout=3.0)
+            if state == "ssh":
+                found.append((port, banner))
+                print(f"  {port}: ssh — {banner}", file=sys.stderr)
+            elif state == "open":
+                print(f"  {port}: открыт, но не ssh", file=sys.stderr)
+        if found:
+            port = found[0][0]
+            print(
+                f"\nssh нашёлся на {port}. Добавляйте с этим портом:\n"
+                f"  python -m app.cli add-node {args.host} <страна> '<пароль>' --ssh-port {port}",
+                file=sys.stderr,
+            )
+            return 1
+        print("  ни на одном из обычных портов ssh нет", file=sys.stderr)
+
+    if outcome == "filtered":
+        ip = _head_public_ip()
+        print(
+            "\nОстаются две причины, и обе на стороне ноды:\n"
+            "  1. Сервер не запущен или ещё не развёрнут — проверьте в панели хостера.\n"
+            "  2. Его фаервол не пропускает эту голову. Разрешить нужно адрес:",
+            file=sys.stderr,
+        )
+        print(f"       {ip or '<не удалось определить>'}", file=sys.stderr)
+        print(
+            "     Часть заграничных хостеров режет российские диапазоны целиком —\n"
+            "     тогда с вашего домашнего компьютера ssh зайдёт, а с головы нет.\n"
+            "     Проверить: ssh root@" + args.host + " со своей машины.",
+            file=sys.stderr,
+        )
     return 1
 
 
