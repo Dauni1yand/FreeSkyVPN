@@ -42,6 +42,27 @@ class NodeStatusResponse:
     session_id: uuid.UUID | None = None
 
 
+
+def _check(response: httpx.Response) -> None:
+    """raise_for_status, но с телом ответа в сообщении.
+
+    marzban-node отвечает на неудачный /start кодом 503 и телом, в котором
+    написано, почему Xray не поднялся, — это единственное место, где
+    причина вообще называется. Штатный raise_for_status тело выбрасывает,
+    и до головы доезжало «Server error '503 Service Unavailable'», годное
+    только чтобы понять, что что-то не так.
+    """
+    if response.is_success:
+        return
+
+    detail = " ".join(response.text.split())[:600]
+    message = (
+        f"{response.request.method} {response.request.url.path} → "
+        f"{response.status_code}" + (f": {detail}" if detail else "")
+    )
+    raise httpx.HTTPStatusError(message, request=response.request, response=response)
+
+
 class NodeRestClient:
     """Speaks the marzban-node REST contract over a caller-supplied httpx.Client.
 
@@ -59,7 +80,7 @@ class NodeRestClient:
 
     def connect(self) -> NodeStatusResponse:
         resp = self._client.post("/connect", timeout=self._timeout_s)
-        resp.raise_for_status()
+        _check(resp)
         data = resp.json()
         self._session_id = uuid.UUID(str(data["session_id"]))
         return NodeStatusResponse(
@@ -72,11 +93,11 @@ class NodeRestClient:
     def ping(self) -> None:
         self._require_session()
         resp = self._client.post("/ping", json={"session_id": str(self._session_id)}, timeout=self._timeout_s)
-        resp.raise_for_status()
+        _check(resp)
 
     def status(self) -> NodeStatusResponse:
         resp = self._client.post("/", timeout=self._timeout_s)
-        resp.raise_for_status()
+        _check(resp)
         data = resp.json()
         return NodeStatusResponse(connected=data["connected"], started=data["started"], core_version=data.get("core_version"))
 
@@ -90,14 +111,14 @@ class NodeRestClient:
             json={"session_id": str(self._session_id), "config": xray_config_json},
             timeout=max(self._timeout_s, 10.0),  # xray boot can legitimately take a couple of seconds
         )
-        resp.raise_for_status()
+        _check(resp)
         data = resp.json()
         return NodeStatusResponse(connected=data["connected"], started=data["started"], core_version=data.get("core_version"))
 
     def stop(self) -> None:
         self._require_session()
         resp = self._client.post("/stop", json={"session_id": str(self._session_id)}, timeout=self._timeout_s)
-        resp.raise_for_status()
+        _check(resp)
 
     def _require_session(self) -> None:
         if self._session_id is None:
