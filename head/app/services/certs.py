@@ -3,8 +3,9 @@
 Each marzban-node generates its own self-signed certificate on first boot,
 so there is no shared CA to trust — the head pins each node's individual
 certificate instead, captured during provisioning and stored on the node
-row. httpx wants a filesystem path for `verify=`, so the stored PEM is
-materialised into a cache directory on first use.
+row. The TLS context that pins it is built in node_manager/channel.py and
+wants a filesystem path, so the stored PEM is materialised into a cache
+directory on first use.
 """
 
 from __future__ import annotations

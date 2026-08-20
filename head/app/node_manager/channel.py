@@ -27,6 +27,7 @@ session before (see rest_client.py), so the new path simply takes over.
 from __future__ import annotations
 
 import logging
+import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -72,11 +73,43 @@ def _control_inbound(node: Node) -> Inbound | None:
     return next((ib for ib in node.inbounds if ib.is_control_channel), None)
 
 
+
+def _ssl_context(certs: NodeCertBundle) -> ssl.SSLContext:
+    """TLS к ноде: доверяем ровно её сертификату и никакому другому.
+
+    Каждая marzban-node выпускает себе самоподписанный сертификат при
+    первом запуске, и адреса ноды в нём нет — ставит его она сама, ничего
+    о будущем адресе не зная. Голова этот сертификат пиннит при
+    провижининге, но `verify=<файл>` в httpx означает «считать его
+    удостоверяющим центром», а это включает и сверку имени. Она падала с
+    «IP address mismatch», и нода оставалась недостижимой навсегда: канал
+    управления не поднимался ни разу за всё время её жизни.
+
+    Проверка имени здесь отключена не в обход контроля, а потому что
+    контроль строже. Имя нужно, когда доверяешь центру, выпустившему
+    сертификат кому угодно: тогда только имя и отличает нужный сервер от
+    любого другого его клиента. Здесь якорь доверия — один конкретный
+    сертификат: принимается ровно он и ничей больше. Подмена требует
+    приватного ключа именно этой ноды, а не сертификата на нужное имя от
+    какого-нибудь публичного центра.
+
+    Что остаётся включённым и что это держит: verify_mode=CERT_REQUIRED —
+    сертификат обязателен и должен совпасть с пиннингом; клиентский
+    сертификат головы — нода со своей стороны проверяет, что пришли мы.
+    """
+    context = ssl.create_default_context(cafile=certs.ca_cert)
+    context.load_cert_chain(certs.client_cert, certs.client_key)
+    context.check_hostname = False
+    # Явно, хотя create_default_context уже так делает: строка ниже — то
+    # единственное, что отделяет пиннинг от отсутствия проверки вообще.
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
+
+
 def _direct_client(node: Node, certs: NodeCertBundle) -> httpx.Client:
     return httpx.Client(
         base_url=f"https://{node.host}:{node.control_port}",
-        verify=certs.ca_cert,
-        cert=(certs.client_cert, certs.client_key),
+        verify=_ssl_context(certs),
     )
 
 
@@ -116,8 +149,7 @@ def _tunnelled_client(node: Node, certs: NodeCertBundle) -> httpx.Client | None:
     _host, local_port = proxy
     return httpx.Client(
         base_url=f"https://{node.host}:{node.control_port}",
-        verify=certs.ca_cert,
-        cert=(certs.client_cert, certs.client_key),
+        verify=_ssl_context(certs),
         proxy=f"socks5://127.0.0.1:{local_port}",
     )
 
