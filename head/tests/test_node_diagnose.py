@@ -18,10 +18,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.db.models.node import NodeChannelState
 from app.services import provisioning
 from app.services.ssh_manager import CommandResult
 
-NODE = SimpleNamespace(host="10.0.0.1", control_port=62050, ssh_user="root", ssh_port=22)
+NODE = SimpleNamespace(
+    host="10.0.0.1",
+    control_port=62050,
+    ssh_user="root",
+    ssh_port=22,
+    channel_state=NodeChannelState.isolated,
+)
 
 
 @pytest.fixture
@@ -43,7 +50,12 @@ def on_node(monkeypatch):
         monkeypatch.setattr(
             provisioning.ssh_manager, "listening_ports", lambda _client: listening
         )
-        return provisioning.diagnose_node(NODE)
+        monkeypatch.setattr(
+            "app.node_manager.channel.call_node",
+            lambda *_a, **_kw: None,
+        )
+        monkeypatch.setattr("app.services.certs.bundle_for", lambda _n: None)
+        return provisioning.diagnose_node(None, NODE)
 
     return build
 
@@ -186,3 +198,96 @@ def test_retrying_a_failed_node_continues_the_same_row(db, monkeypatch, tmp_path
 
     rows = db.scalars(select(Node).where(Node.host == "203.0.113.77")).all()
     assert len(rows) == 1, f"после трёх попыток строк должно быть одна, а не {len(rows)}"
+
+
+# --- взгляд со стороны головы --------------------------------------------
+
+
+def test_a_healthy_looking_node_still_reports_whether_the_head_reaches_it(monkeypatch):
+    """Нода может быть безупречна со своей стороны и недостижима для головы.
+
+    Именно так и выглядела реальная поломка: контейнер работает, порт
+    слушается, лог чистый — а канал управления изолирован. Отчёт, который
+    заканчивался на «всё хорошо», оставлял человека там же, откуда начал.
+    """
+
+    def run(_client, command, **_kwargs):
+        if "State.Status" in command:
+            return CommandResult(stdout="running", stderr="", exit_status=0)
+        if "ls -1" in command:
+            return CommandResult(stdout=ALL_CERTS, stderr="", exit_status=0)
+        return CommandResult(stdout="", stderr="", exit_status=0)
+
+    connect = MagicMock()
+    connect.return_value.__enter__ = lambda _self: MagicMock()
+    connect.return_value.__exit__ = lambda *_a: False
+    monkeypatch.setattr(provisioning.ssh_manager, "connect", connect)
+    monkeypatch.setattr(provisioning.ssh_manager, "run", run)
+    monkeypatch.setattr(provisioning.ssh_manager, "listening_ports", lambda _c: {62050})
+    monkeypatch.setattr("app.services.certs.bundle_for", lambda _n: None)
+
+    def refuse(*_args, **_kwargs):
+        raise ConnectionRefusedError("[Errno 111] Connection refused")
+
+    monkeypatch.setattr("app.node_manager.channel.call_node", refuse)
+
+    report = "\n".join(provisioning.diagnose_node(None, NODE))
+    assert "голова НЕ достучалась" in report
+    assert "Connection refused" in report
+
+
+def test_a_reachable_node_says_so_plainly(monkeypatch):
+    def run(_client, command, **_kwargs):
+        if "State.Status" in command:
+            return CommandResult(stdout="running", stderr="", exit_status=0)
+        if "ls -1" in command:
+            return CommandResult(stdout=ALL_CERTS, stderr="", exit_status=0)
+        return CommandResult(stdout="", stderr="", exit_status=0)
+
+    connect = MagicMock()
+    connect.return_value.__enter__ = lambda _self: MagicMock()
+    connect.return_value.__exit__ = lambda *_a: False
+    monkeypatch.setattr(provisioning.ssh_manager, "connect", connect)
+    monkeypatch.setattr(provisioning.ssh_manager, "run", run)
+    monkeypatch.setattr(provisioning.ssh_manager, "listening_ports", lambda _c: {62050})
+    monkeypatch.setattr("app.services.certs.bundle_for", lambda _n: None)
+    monkeypatch.setattr("app.node_manager.channel.call_node", lambda *_a, **_kw: None)
+
+    report = "\n".join(provisioning.diagnose_node(None, NODE))
+    assert "голова достучалась" in report
+
+
+def test_the_diagnosis_reports_a_recovery_it_caused(monkeypatch):
+    """Успешный вызов снимает изоляцию — об этом стоит сказать прямо,
+    иначе человек пойдёт чинить то, что уже починилось."""
+    from app.db.models.node import NodeChannelState
+
+    node = SimpleNamespace(
+        host="10.0.0.1",
+        control_port=62050,
+        ssh_user="root",
+        ssh_port=22,
+        channel_state=NodeChannelState.isolated,
+    )
+
+    def run(_client, command, **_kwargs):
+        if "State.Status" in command:
+            return CommandResult(stdout="running", stderr="", exit_status=0)
+        if "ls -1" in command:
+            return CommandResult(stdout=ALL_CERTS, stderr="", exit_status=0)
+        return CommandResult(stdout="", stderr="", exit_status=0)
+
+    def recover(_db, target, _certs, _fn):
+        target.channel_state = NodeChannelState.active
+
+    connect = MagicMock()
+    connect.return_value.__enter__ = lambda _self: MagicMock()
+    connect.return_value.__exit__ = lambda *_a: False
+    monkeypatch.setattr(provisioning.ssh_manager, "connect", connect)
+    monkeypatch.setattr(provisioning.ssh_manager, "run", run)
+    monkeypatch.setattr(provisioning.ssh_manager, "listening_ports", lambda _c: {62050})
+    monkeypatch.setattr("app.services.certs.bundle_for", lambda _n: None)
+    monkeypatch.setattr("app.node_manager.channel.call_node", recover)
+
+    report = "\n".join(provisioning.diagnose_node(None, node))
+    assert "isolated → active" in report

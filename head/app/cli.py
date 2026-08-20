@@ -450,15 +450,16 @@ def node_diagnose(argv: list[str]) -> int:
             return 1
         print(f"смотрю {node.host} по ssh…", flush=True)
         try:
-            report = provisioning.diagnose_node(node)
+            report = provisioning.diagnose_node(db, node)
         except SshError as exc:
             print(f"\nне зайти по ssh: {exc}", file=sys.stderr)
             print("Ключ головы мог не установиться — попробуйте добавить ноду заново.", file=sys.stderr)
             return 1
+        db.commit()
 
     print()
     for line in report:
-        print(f"  {line}")
+        print(f"  {line}" if line else "")
     return 0
 
 

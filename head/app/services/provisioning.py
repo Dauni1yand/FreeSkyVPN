@@ -283,7 +283,7 @@ def _apply_bootstrap_payload(db: Session, node: Node, payload: dict) -> None:
     db.flush()
 
 
-def diagnose_node(node: Node) -> list[str]:
+def diagnose_node(db: Session, node: Node) -> list[str]:
     """Посмотреть на ноду глазами головы и сказать, что с ней не так.
 
     Управляющий канал отвечает «Connection refused» — это значит, что пакет
@@ -327,6 +327,21 @@ def diagnose_node(node: Node) -> list[str]:
         if tail:
             report.append("последнее из лога контейнера:")
             report.extend(f"    {line}" for line in tail[-12:])
+
+    report.append("")
+    report.append(f"канал управления сейчас: {node.channel_state.value}")
+    was = node.channel_state
+    try:
+        from app.node_manager.channel import call_node
+        from app.services.certs import bundle_for
+
+        call_node(db, node, bundle_for(node), lambda client: client.status())
+    except Exception as exc:  # noqa: BLE001 - показываем любую причину как есть
+        report.append(f"голова НЕ достучалась: {type(exc).__name__}: {exc}")
+    else:
+        report.append("голова достучалась — нода отвечает")
+    if node.channel_state != was:
+        report.append(f"состояние канала: {was.value} → {node.channel_state.value}")
 
     return report
 
